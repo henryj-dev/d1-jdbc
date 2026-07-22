@@ -1,7 +1,7 @@
 # Cloudflare D1 JDBC 드라이버 — 설계 문서
 
-> 상태: 설계 확정 전 초안 (v0.1)
-> 근거: `cloudflare/workers-sdk` 및 `cloudflare/workerd` 소스 분석 (2026-07). 파일:라인 참조는 분석 시점 기준.
+> 상태: 스켈레톤 구현 완료, 문서 리서치 반영 (v0.2)
+> 근거: `cloudflare/workers-sdk`·`cloudflare/workerd` 소스 분석 + **Cloudflare 공식 문서 리서치**(2026-07, §9). 소스 분석과 문서가 충돌하면 §9가 우선.
 
 ## 0. 목표와 배경
 
@@ -22,7 +22,7 @@ D1의 로컬 시뮬 · 바인딩 클라이언트 · 엣지 프록시 · 공개 R
 POST <base>/query?resultsFormat=<FMT>      # 읽기/일반
 POST <base>/execute?resultsFormat=NONE     # 쓰기
 Content-Type: application/json
-x-cf-d1-session-commit-token: <bookmark>   # 세션 일관성, 요청·응답 양방향
+x-d1-bookmark: <bookmark>                  # 세션 일관성(바인딩=B 전용), 요청·응답 양방향  ※§9-3
 
 Body 단일:  { "sql": "... ? ...", "params": [v1, v2, ...] }
 Body 배치:  [ {sql, params}, {sql, params}, ... ]    # 원자적 실행
@@ -63,8 +63,8 @@ env.DB.prepare(sql).bind(...).all()
 | 인증 | `Authorization: Bearer <API token>` | 직접 설계 (공유 시크릿 / Access) |
 | 배포 필요 | 없음 | Worker 1개 **영구 배포** |
 | 응답 봉투 | `{ result, success, errors[], messages[] }` (CF 표준) | 직접 정의 (봉투 없이 D1Result 그대로 통과 가능) |
-| 원자적 파라미터 배치 | 취약 (다중문 원자성 까다로움) | **`db.batch([{sql,params}...])` 위임 → 깔끔** |
-| 세션(bookmark) | 지원 (Sessions API) | binding 네이티브 |
+| 원자적 파라미터 배치 | `{batch:[{sql,params}…]}` 1급 폼 존재 — 원자성 실측 필요(§9-2) | **`db.batch([{sql,params}...])` 위임 → 원자적** |
+| 세션(bookmark) | **미지원** (Sessions는 바인딩 전용, REST 미제공 §9-3) | binding 네이티브 |
 | Rate limit | REST API 한도 | Worker 한도(여유) |
 
 - SDK가 자동으로 하는 임시 배포를, B안은 **영구 배포 워커 1개로 고정**한 것. JVM 앱은 커넥션마다 워커를 올릴 수 없으므로 영구 배포가 현실적.
@@ -168,7 +168,7 @@ D1가 허용하는 값 타입: **`number | string | null | 바이트배열(numbe
 
 ### 4-4. meta -> JDBC
 
-`meta: { changes, last_row_id, rows_read, rows_written, duration, size_after, changed_db, served_by }`
+`meta: { changes, last_row_id, rows_read, rows_written, duration, size_after, changed_db, served_by_colo, served_by_primary, served_by_region, timings: { sql_duration_ms } }`  ※§9-2 (구 `served_by` 단일 필드는 폐기)
 
 | meta | JDBC |
 |---|---|
@@ -190,14 +190,14 @@ D1가 허용하는 값 타입: **`number | string | null | 바이트배열(numbe
    - `setAutoCommit(false)` -> 문장을 클라이언트 버퍼에 모았다가 `commit()` 시 하나의 원자적 배치로 전송. `rollback()` = 버퍼 폐기.
    - 한계: 커밋 전 중간 SELECT를 같은 트랜잭션에서 다시 읽는 패턴은 불가(쓰기 중심 트랜잭션만 안전). **문서화 필수.**
 2. **서버측 PreparedStatement 없음.** 매 호출 SQL 텍스트 전량 전송. PreparedStatement는 클라이언트 템플릿(파라미터 바인딩)일 뿐.
-3. **세션 bookmark = read-your-write 일관성이지 격리(isolation)가 아님.** `Connection`이 마지막 `x-cf-d1-session-commit-token`을 들고 다니며 다음 요청 헤더에 실으면 읽기 복제본에서도 자기 쓰기를 본다.
+3. **세션 bookmark = read-your-write 일관성이지 격리(isolation)가 아님.** `Connection`이 마지막 `x-d1-bookmark`(§9-3, 구 `x-cf-d1-session-commit-token`)를 들고 다니며 다음 요청 헤더에 실으면 읽기 복제본에서도 자기 쓰기를 본다. **단, 세션은 바인딩(B) 전용 — REST(A)는 미제공.**
 4. **크기 한도.** 응답/문장/배치 문장 수 상한 존재 -> `executeBatch` 청크 분할, 큰 결과 페이징 필요.
 
 ### 트랜잭션 전략 (전송로별)
 
 | | autocommit=true | autocommit=false (`commit()`) |
 |---|---|---|
-| REST (A) | 요청 1개 = 문장 1개 | 버퍼 -> 다중문 1요청 (원자성 best-effort) `supportsAtomicBatch=false` |
+| REST (A) | 요청 1개 = 문장 1개 | 버퍼 -> `{batch:[…]}` 1요청. `supportsAtomicBatch`는 **프로브 후 확정**(현재 `false` 잠정, §9-2) |
 | Proxy (B) | 요청 1개 | 버퍼 -> `/batch` = **원자적** `supportsAtomicBatch=true` |
 
 ---
@@ -241,14 +241,28 @@ export default {
 
 ---
 
-## 7. 열린 항목 (구현 전 확정 필요)
+## 7. 열린 항목 — 상태 (문서 리서치 2026-07 반영)
 
-- [ ] REST `/raw` 응답 정확한 스키마(컬럼/행) 및 CF 봉투 필드 최종 확인 (docs 대조).
-- [ ] REST에서 파라미터 있는 원자적 배치의 실제 지원 범위 확인 (다중문 vs 배열).
-- [ ] Date/Time 직렬화 컨벤션 고정 (ISO string vs epoch).
-- [ ] `DatabaseMetaData` 능력 플래그 표 확정 (전송로별).
-- [ ] 배치/응답 크기 상한 수치 확인 (docs).
-- [ ] 빌드 도구(Gradle 권장) 및 JDBC 버전 타깃(JDBC 4.2 / Java 17+) 확정.
+- [x] **REST `/raw` 스키마/봉투 확정.** 봉투 `{ result:[…], success, errors:[], messages:[] }`,
+      요소별 `{ success, results:{columns, rows}, meta }`. `/query`는 `results`가 행-객체 배열(컬럼 손실) →
+      드라이버는 `/raw` 사용 확정. (§9-2)
+- [~] **REST 원자적 배치 — 재평가 필요.** REST는 `{ batch:[{sql,params}, …] }` 1급 폼을 제공하며 "as a batch"로 실행.
+      원자성(all-or-nothing) 문구가 바인딩 문서만큼 명시적이지 않음 → **라이브 프로브로 확정 후 `supportsAtomicBatch` 결정**.
+      (기존 가정 `false`는 보류) (§9-2)
+- [x] **Date/Time 컨벤션 = 드라이버 소유 결정.** Cloudflare는 날짜 컨벤션을 문서화하지 않음(SQLite에 DATE 타입 없음).
+      드라이버 기본값: 날짜/시간을 **ISO-8601 TEXT**로 직렬화(이식성), BLOB은 **number 배열**(D1의 BLOB 읽기 표현과 일치). (§9-4)
+- [~] **능력 플래그 표 — 세션 정정 반영 필요.** 세션/bookmark는 **바인딩(B) 전용, REST(A) 미제공**.
+      `DatabaseMetaData`는 REST에서 세션 일관성 미지원으로 신고. (§9-3)
+- [x] **크기 상한 확정 + 미문서 항목 명시.** 아래 §9-1 표. 문장 100KB / 파라미터 100개 / BLOB·문자열 2MB /
+      컬럼 100개 / 바인딩 호출당 쿼리 1000개 / 쿼리 30초. **REST 요청·응답 바이트 상한, batch 문장 수 상한은 미문서.**
+- [x] 빌드/타깃 확정: **Gradle(Kotlin DSL) + Java 17 + JDBC 4.2**, 런타임 의존성 0 (구현 완료).
+
+### 구현에 반영할 정정 (문서와 모순된 기존 가정)
+
+- [ ] **wire 헤더 개명**: `x-cf-d1-session-commit-token`(내부 workerd 명) → 공개 문서 헤더 **`x-d1-bookmark`**(요청·응답). 코드 `BOOKMARK_HEADER` 상수 변경.
+- [ ] **세션을 B 전용으로**: §2 능력표에서 REST의 세션 지원 제거. `RestTransport.capabilities().supportsSessions=false`.
+- [ ] **`supportsAtomicBatch`(REST)**: 라이브 프로브 후 값 확정(현재 `false` 잠정).
+- [ ] **`meta` 필드 최신화**: `served_by` → `served_by_colo`/`served_by_primary`/`served_by_region`, `timings.sql_duration_ms`, `changed_db` 반영 (§4-4, `D1Meta`).
 
 ---
 
@@ -260,3 +274,45 @@ export default {
 - `workers-sdk packages/remote-bindings/templates/remoteBindings/ProxyServerWorker.ts:309` — 엣지 3방향 라우터.
 - `workers-sdk packages/wrangler/src/d1/execute.ts:505,627` — 공개 REST API 경로/호출.
 - `workers-sdk packages/workers-utils/src/config/binding-local-support.ts:22` — 바인딩 remote 지원 티어.
+
+---
+
+## 9. 확정 사실 (Cloudflare 공식 문서 리서치, 2026-07)
+
+> 아래는 소스 분석이 아닌 **공식 문서**로 확정한 값이다. §1~§6의 소스 분석과 충돌하는 부분은 여기(§9)가 우선한다.
+
+### 9-1. 상한 (limits) — 출처: developers.cloudflare.com/d1/platform/limits
+
+| 항목 | 값 | 드라이버 반영 |
+|---|---|---|
+| 문장 길이 | 100,000 B (100KB) | `setString`/SQL 길이 가드, 초과 시 조기 `SQLException` |
+| 바인딩 파라미터 수 | 100 / 문장 | 파라미터 수 가드 |
+| BLOB·문자열·행 크기 | 2,000,000 B (2MB) | `setBytes`/`setString` 값 가드 |
+| 컬럼 수 | 100 / 테이블 | `ResultSetMetaData` 가정 상한 |
+| 쿼리 시간 | 30초 | 타임아웃 기본값 정렬 |
+| 바인딩 호출당 쿼리 수 | 1,000 (Paid) / 50 (Free) | **B(프록시) `executeBatch` 청크 상한** |
+| DB 크기 | 10GB (Paid) / 500MB (Free) | 참고 |
+
+**미문서(추정 금지):** `db.batch` 문장 수 자체의 상한, REST `/query`·`/raw` 요청·응답 바이트 상한, 바인딩 응답 크기, SELECT 행-스캔 상한. → 응답 크기 기반 자동 페이징 불가; 큰 결과는 SQL `LIMIT/OFFSET` 행-수 휴리스틱으로 처리하고 "CF 미문서"를 명기.
+
+### 9-2. REST 결과 형태 — 출처: api.cloudflare.com …/d1/…/raw, …/query
+
+- 봉투: `{ result:[…], success, errors:[], messages:[] }`. 요소별 `{ success, meta, results }`.
+- `/raw` → `results = { columns:string[], rows:(…)[][] }` (컬럼 보존). `/query` → `results = 행-객체 배열` (컬럼 순서·중복 손실). → **드라이버는 `/raw` 확정.**
+- 배치: 본문에 `{ batch:[{sql,params}, …] }` **1급 폼** 존재("as a batch" 실행). 원자성 문구가 바인딩 문서만큼 강하지 않음 → **라이브 프로브 필요.**
+- 에러: `{ code:number, message:string, documentation_url?, source.pointer? }`. **고정 코드 열거 없음** → SQLState는 메시지 휴리스틱.
+
+### 9-3. 세션/일관성 — 출처: d1/best-practices/read-replication, d1/worker-api/d1-database
+
+- bookmark = **순차 일관성(read-your-write)**, **트랜잭션 격리 아님.** (§5.3 확인 ✅)
+- 공개 헤더는 **`x-d1-bookmark`** (요청·응답). `x-cf-d1-session-commit-token`은 내부 workerd 명 → **개명 필요.**
+- **Sessions API는 바인딩 전용, REST 미제공.** → 세션 일관성은 **B(프록시)만.** (§2 정정)
+- 인터랙티브 트랜잭션 없음(auto-commit), 원자성은 단일 `batch`에 한정. (§5.1 확인 ✅)
+- `withSession` 부트스트랩: `first-unconstrained`(기본)/`first-primary`/`<bookmark>`; `getBookmark()`는 마지막 쿼리 버전(쿼리 없으면 null).
+
+### 9-4. 파라미터/타입 — 출처: d1/worker-api, d1/worker-api/prepared-statements
+
+- 바인딩 네이티브 변환: `null→NULL`, `Number→REAL/INTEGER`, `String→TEXT`, **`Boolean→INTEGER(0/1)`**, **`ArrayBuffer/뷰→BLOB`**, **BLOB 읽기→JS `Array`(바이트 정수 배열)**. `undefined→D1_TYPE_ERROR`.
+  → JSON wire에는 Boolean/ArrayBuffer 충실 인코딩이 없으므로 **bool→1/0, blob→number 배열** 정규화가 두 전송로 모두에 안전하고, D1의 BLOB 읽기 표현과도 일치. (§4-2 근거 재서술: "D1에 boolean 없음"이 아니라 "JSON wire 인코딩 한계".)
+- 파라미터: **순서형 `?NNN` / 익명 `?`만** 지원(명명 파라미터 미지원). (§4-2 확인 ✅)
+- Date/Time 컨벤션: Cloudflare **미문서** → 드라이버 소유 결정. 기본값 **ISO-8601 TEXT**.
