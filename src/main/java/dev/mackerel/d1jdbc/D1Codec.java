@@ -43,8 +43,23 @@ public final class D1Codec {
         return Json.write(body);
     }
 
-    /** Build the {@code [{sql, params}, ...]} array body for a batch. */
+    /** Build the {@code [{sql, params}, ...]} array body for a proxy batch. */
     public static String buildBatchBody(List<D1Request> stmts) {
+        return Json.write(batchArray(stmts));
+    }
+
+    /**
+     * Build the {@code {"batch":[{sql, params}, ...]}} body for the REST
+     * {@code /raw} first-class batch form, which D1 executes atomically (verified
+     * live, DESIGN 9-2).
+     */
+    public static String buildRestBatchBody(List<D1Request> stmts) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("batch", batchArray(stmts));
+        return Json.write(body);
+    }
+
+    private static List<Object> batchArray(List<D1Request> stmts) {
         List<Object> arr = new ArrayList<>(stmts.size());
         for (D1Request r : stmts) {
             Map<String, Object> obj = new LinkedHashMap<>();
@@ -52,7 +67,7 @@ public final class D1Codec {
             obj.put("params", r.params() == null ? List.of() : r.params());
             arr.add(obj);
         }
-        return Json.write(arr);
+        return arr;
     }
 
     // ----------------------------------------------------------- response parse

@@ -63,7 +63,7 @@ env.DB.prepare(sql).bind(...).all()
 | 인증 | `Authorization: Bearer <API token>` | 직접 설계 (공유 시크릿 / Access) |
 | 배포 필요 | 없음 | Worker 1개 **영구 배포** |
 | 응답 봉투 | `{ result, success, errors[], messages[] }` (CF 표준) | 직접 정의 (봉투 없이 D1Result 그대로 통과 가능) |
-| 원자적 파라미터 배치 | `{batch:[{sql,params}…]}` 1급 폼 존재 — 원자성 실측 필요(§9-2) | **`db.batch([{sql,params}...])` 위임 → 원자적** |
+| 원자적 파라미터 배치 | `{batch:[{sql,params}…]}` 1급 폼 = **원자적**(실측 확정 §9-2) | **`db.batch([{sql,params}...])` 위임 → 원자적** |
 | 세션(bookmark) | **미지원** (Sessions는 바인딩 전용, REST 미제공 §9-3) | binding 네이티브 |
 | Rate limit | REST API 한도 | Worker 한도(여유) |
 
@@ -197,7 +197,7 @@ D1가 허용하는 값 타입: **`number | string | null | 바이트배열(numbe
 
 | | autocommit=true | autocommit=false (`commit()`) |
 |---|---|---|
-| REST (A) | 요청 1개 = 문장 1개 | 버퍼 -> `{batch:[…]}` 1요청. `supportsAtomicBatch`는 **프로브 후 확정**(현재 `false` 잠정, §9-2) |
+| REST (A) | 요청 1개 = 문장 1개 | 버퍼 -> `{batch:[…]}` 1요청 = **원자적** `supportsAtomicBatch=true` (실측 확정 §9-2) |
 | Proxy (B) | 요청 1개 | 버퍼 -> `/batch` = **원자적** `supportsAtomicBatch=true` |
 
 ---
@@ -246,9 +246,8 @@ export default {
 - [x] **REST `/raw` 스키마/봉투 확정.** 봉투 `{ result:[…], success, errors:[], messages:[] }`,
       요소별 `{ success, results:{columns, rows}, meta }`. `/query`는 `results`가 행-객체 배열(컬럼 손실) →
       드라이버는 `/raw` 사용 확정. (§9-2)
-- [~] **REST 원자적 배치 — 재평가 필요.** REST는 `{ batch:[{sql,params}, …] }` 1급 폼을 제공하며 "as a batch"로 실행.
-      원자성(all-or-nothing) 문구가 바인딩 문서만큼 명시적이지 않음 → **라이브 프로브로 확정 후 `supportsAtomicBatch` 결정**.
-      (기존 가정 `false`는 보류) (§9-2)
+- [x] **REST 원자적 배치 = 원자적 (실측 확정).** `{ batch:[…] }` 1급 폼에 UNIQUE 위반 배치 → 전체 롤백 확인.
+      `RestTransport.batch()`가 이 폼을 사용하도록 구현, `supportsAtomicBatch=true`. (§9-2)
 - [x] **Date/Time 컨벤션 = 드라이버 소유 결정.** Cloudflare는 날짜 컨벤션을 문서화하지 않음(SQLite에 DATE 타입 없음).
       드라이버 기본값: 날짜/시간을 **ISO-8601 TEXT**로 직렬화(이식성), BLOB은 **number 배열**(D1의 BLOB 읽기 표현과 일치). (§9-4)
 - [~] **능력 플래그 표 — 세션 정정 반영 필요.** 세션/bookmark는 **바인딩(B) 전용, REST(A) 미제공**.
@@ -261,7 +260,7 @@ export default {
 
 - [ ] **wire 헤더 개명**: `x-cf-d1-session-commit-token`(내부 workerd 명) → 공개 문서 헤더 **`x-d1-bookmark`**(요청·응답). 코드 `BOOKMARK_HEADER` 상수 변경.
 - [ ] **세션을 B 전용으로**: §2 능력표에서 REST의 세션 지원 제거. `RestTransport.capabilities().supportsSessions=false`.
-- [ ] **`supportsAtomicBatch`(REST)**: 라이브 프로브 후 값 확정(현재 `false` 잠정).
+- [x] **`supportsAtomicBatch`(REST) = true**: `{batch:[…]}` 폼 구현 완료(실측 확정 §9-2).
 - [ ] **`meta` 필드 최신화**: `served_by` → `served_by_colo`/`served_by_primary`/`served_by_region`, `timings.sql_duration_ms`, `changed_db` 반영 (§4-4, `D1Meta`).
 
 ---
@@ -299,7 +298,7 @@ export default {
 
 - 봉투: `{ result:[…], success, errors:[], messages:[] }`. 요소별 `{ success, meta, results }`.
 - `/raw` → `results = { columns:string[], rows:(…)[][] }` (컬럼 보존). `/query` → `results = 행-객체 배열` (컬럼 순서·중복 손실). → **드라이버는 `/raw` 확정.**
-- 배치: 본문에 `{ batch:[{sql,params}, …] }` **1급 폼** 존재("as a batch" 실행). 원자성 문구가 바인딩 문서만큼 강하지 않음 → **라이브 프로브 필요.**
+- 배치: 본문에 `{ batch:[{sql,params}, …] }` **1급 폼** 존재. **원자성 실측 확정(2026-07):** `/raw`에 2문(2번째가 UNIQUE 위반) 배치 → 봉투 `success:false`, **1번째도 롤백**(`count=0`). 성공 시 `result[]`는 문장별 `{results:{columns,rows}, success, meta}` 배열. → `RestTransport.batch()`는 이 폼을 쓰고 `supportsAtomicBatch=true`.
 - 에러: `{ code:number, message:string, documentation_url?, source.pointer? }`. **고정 코드 열거 없음** → SQLState는 메시지 휴리스틱.
 
 ### 9-3. 세션/일관성 — 출처: d1/best-practices/read-replication, d1/worker-api/d1-database

@@ -23,9 +23,10 @@ import java.util.Map;
  * returns {@code {results:{columns, rows}, meta}} per element, which is exactly
  * the {@code ROWS_AND_COLUMNS} shape the codec expects.
  *
- * <p>Atomic batches are not natively supported here: {@link #batch} runs the
- * statements sequentially (best-effort, non-atomic), so
- * {@code supportsAtomicBatch = false}.
+ * <p>Batches use the REST {@code /raw} first-class {@code {batch:[...]}} form,
+ * which D1 executes atomically (all-or-nothing, verified live — DESIGN 9-2), so
+ * {@code supportsAtomicBatch = true}. Sessions are not available over REST, so
+ * {@code supportsSessions = false} (DESIGN 9-3).
  */
 public final class RestTransport implements D1Transport {
 
@@ -59,18 +60,31 @@ public final class RestTransport implements D1Transport {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public List<D1QueryResult> batch(List<D1Request> stmts, String bookmark) {
-        // REST has no clean atomic array endpoint; run sequentially (best-effort),
-        // threading the session bookmark forward. supportsAtomicBatch() == false.
-        List<D1QueryResult> out = new ArrayList<>(stmts.size());
-        String current = bookmark;
-        for (D1Request stmt : stmts) {
-            D1QueryResult r = sendSingle(
-                    D1Codec.buildQueryBody(stmt.sql(), stmt.params()), current);
-            out.add(r);
-            if (r.bookmark() != null) {
-                current = r.bookmark();
-            }
+        // REST /raw accepts a first-class {batch:[{sql,params}...]} form that D1
+        // executes atomically — all-or-nothing (verified live, DESIGN 9-2). On any
+        // statement failure the whole envelope reports success:false and nothing
+        // is applied. supportsAtomicBatch() == true.
+        HttpResponse<String> response = send(rawEndpoint, D1Codec.buildRestBatchBody(stmts), bookmark);
+        Map<String, Object> envelope;
+        try {
+            envelope = Json.parseObject(response.body());
+        } catch (RuntimeException parseError) {
+            throw nonJsonError(response, parseError);
+        }
+        if (!Boolean.TRUE.equals(envelope.get("success")) || response.statusCode() >= 400) {
+            throw envelopeError(envelope, response.statusCode());
+        }
+        String returnedBookmark = response.headers()
+                .firstValue(BOOKMARK_HEADER).orElse(bookmark);
+        Object resultNode = envelope.get("result");
+        List<Object> elements = (resultNode instanceof List)
+                ? (List<Object>) resultNode : List.of();
+        List<D1QueryResult> out = new ArrayList<>(elements.size());
+        for (Object el : elements) {
+            Map<String, Object> obj = (el instanceof Map) ? (Map<String, Object>) el : Map.of();
+            out.add(D1Codec.parseResult(obj, returnedBookmark));
         }
         return out;
     }
@@ -176,10 +190,10 @@ public final class RestTransport implements D1Transport {
 
     @Override
     public Capabilities capabilities() {
-        // supportsAtomicBatch: false pending a live probe of the REST
-        // {batch:[...]} form (DESIGN 9-2). supportsSessions: false — the D1
-        // Sessions API is not available over REST (DESIGN 9-3).
-        return new Capabilities(false, false, "rest");
+        // supportsAtomicBatch: true — the REST {batch:[...]} form is atomic
+        // (verified live, DESIGN 9-2). supportsSessions: false — the D1 Sessions
+        // API is not available over REST (DESIGN 9-3).
+        return new Capabilities(true, false, "rest");
     }
 
     @Override

@@ -8,7 +8,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      // Replace with your database id: `wrangler d1 list` or the dashboard.
+      // Replace both with your database: `wrangler d1 list` or the dashboard.
+      "database_name": "<your-d1-database-name>",
       "database_id": "<uuid>"
     }
   ]

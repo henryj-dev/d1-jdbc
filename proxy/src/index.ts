@@ -102,56 +102,24 @@ function checkAuth(req: Request, env: Env): Response | null {
   return null;
 }
 
-const EMPTY_META = {
-  changes: 0,
-  last_row_id: 0,
-  rows_read: 0,
-  rows_written: 0,
-  duration: 0,
-  served_by_primary: true,
-};
-
 /**
- * Run a single /query statement.
+ * Run a single /query statement via `.all()`, which returns BOTH `meta`
+ * (changes / last_row_id — needed for writes) AND the result rows as objects
+ * (needed for reads). {@link normalizeAll} reshapes to {columns, rows, meta}.
  *
- * Reads use `.raw({ columns: true })` — true ROWS_AND_COLUMNS: the first element
- * is the column-name array, the rest are row arrays. This preserves column order
- * and duplicate/aliased names (DESIGN 4-1) that `.all()`'s array-of-objects
- * collapses, and returns the column header even for a zero-row result. `.raw()`
- * omits `meta`, which reads do not need (changes = 0).
- *
- * Writes use `.all()` so `meta` (changes / last_row_id) survives for
- * getUpdateCount / getGeneratedKeys; writes produce no result columns.
+ * We deliberately do NOT use `.raw({ columns: true })`: on the Sessions API path
+ * (`env.DB.withSession().prepare()`) the deployed D1 runtime does not honor the
+ * `columns` option — it returns data rows with NO column-name header — so column
+ * names must come from the object keys of `.all()` (verified live, DESIGN 9-2).
+ * Tradeoff: two identically-named result columns collapse (rare). The REST
+ * transport (`/raw`) has full ROWS_AND_COLUMNS fidelity if you need it.
  */
 async function runOne(
   session: D1DatabaseSession,
   spec: StatementSpec,
 ): Promise<NormalizedResult> {
   const stmt = session.prepare(spec.sql).bind(...(spec.params ?? []));
-  if (isReadStatement(spec.sql)) {
-    const raw = (await stmt.raw({ columns: true })) as unknown[][];
-    if (raw.length === 0) {
-      return { columns: [], rows: [], meta: EMPTY_META };
-    }
-    return {
-      columns: (raw[0] as string[]) ?? [],
-      rows: raw.slice(1),
-      meta: EMPTY_META,
-    };
-  }
   return normalizeAll(await stmt.all());
-}
-
-/** Heuristic: does this statement return a row set the caller wants columns for? */
-function isReadStatement(sql: string): boolean {
-  const s = sql.trimStart().toUpperCase();
-  return (
-    s.startsWith("SELECT") ||
-    s.startsWith("WITH") ||
-    s.startsWith("PRAGMA") ||
-    s.startsWith("EXPLAIN") ||
-    /\bRETURNING\b/i.test(sql)
-  );
 }
 
 /**
