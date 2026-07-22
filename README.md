@@ -1,28 +1,144 @@
 # d1-jdbc
 
-Cloudflare D1(엣지 SQLite)을 표준 JDBC로 접근하기 위한 드라이버.
+[![CI](https://github.com/mack-erel/d1-jdbc/actions/workflows/ci.yml/badge.svg)](https://github.com/mack-erel/d1-jdbc/actions/workflows/ci.yml)
+[![JitPack](https://jitpack.io/v/mack-erel/d1-jdbc.svg)](https://jitpack.io/#mack-erel/d1-jdbc)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-D1의 `{sql, params}` HTTP 계약을 JDBC 표면 아래에 재현하며, 두 전송로를 Transport 추상화로 지원한다:
+A JDBC driver for [Cloudflare D1](https://developers.cloudflare.com/d1/) (edge SQLite).
+**Zero runtime dependencies** — only the JDK (`java.net.http` + a built-in JSON codec).
 
-- **REST** — Cloudflare 공개 D1 REST API (무배포 baseline)
-- **Proxy** — 셀프 배포 프록시 Worker (원자적 배치/트랜잭션 등 고급 기능)
+한국어 문서: [README.ko.md](README.ko.md)
 
-## 상태
+D1 speaks a simple `{sql, params}` HTTP contract everywhere; this driver reproduces
+that contract beneath a standard JDBC surface, with two interchangeable transports:
 
-설계 단계. 구현 전.
+| Transport | URL scheme | Deploy needed | Atomic batch | Sessions (read-your-write) |
+|---|---|---|---|---|
+| **REST** — public D1 REST API | `jdbc:cloudflare-d1:rest://…` | none | ✅ (`{batch:[…]}`, verified live) | ❌ (not exposed over REST) |
+| **Proxy** — self-deployed Worker | `jdbc:cloudflare-d1:proxy://…` | one Worker ([`proxy/`](proxy/)) | ✅ (`db.batch()`) | ✅ (`x-d1-bookmark`) |
 
-- 설계 문서: [`docs/DESIGN.md`](docs/DESIGN.md) — 프로토콜 분석, 전송로 비교, JDBC 매핑 규격, 제약, 프록시 Worker 스펙.
+Works in GUI tools: browsing a live D1 database from **DBeaver** (tables, columns,
+primary keys, data) is verified — see [DBeaver setup](#dbeaver--gui-tools).
 
-## E2E 테스트 (opt-in, 실제 D1)
+## Installation
 
-실제 Cloudflare D1에 네트워크로 붙는 end-to-end 테스트는 **opt-in**이다. 크리덴셜이 없으면
-모든 e2e 테스트는 **SKIP**(실패 아님)되어 오프라인 스위트에 영향이 없다. 환경변수 또는
-gitignore된 `e2e.local.properties`로 크리덴셜을 공급하면 실행된다.
+Via [JitPack](https://jitpack.io/#mack-erel/d1-jdbc):
 
-- 실행 방법·크리덴셜 획득(최소 권한 `Account · D1 · Edit` 토큰, `wrangler d1 create`,
-  프록시 배포): [`docs/E2E.md`](docs/E2E.md)
-- 템플릿: [`e2e.local.properties.example`](e2e.local.properties.example)
+```kotlin
+// build.gradle.kts
+repositories {
+    maven("https://jitpack.io")
+}
+dependencies {
+    implementation("com.github.mack-erel:d1-jdbc:v0.1.0")
+}
+```
 
-## 다음 단계
+```xml
+<!-- pom.xml -->
+<repository><id>jitpack.io</id><url>https://jitpack.io</url></repository>
+<dependency>
+  <groupId>com.github.mack-erel</groupId>
+  <artifactId>d1-jdbc</artifactId>
+  <version>v0.1.0</version>
+</dependency>
+```
 
-`docs/DESIGN.md`의 "열린 항목"과 착수 순서(프록시 Worker / 자바 스켈레톤) 참조.
+## Quick start
+
+```java
+// REST transport: no deployment, just an API token with Account · D1 · Edit scope.
+String url = "jdbc:cloudflare-d1:rest://<account_id>/<database_id>?token=<API_TOKEN>";
+
+try (Connection conn = DriverManager.getConnection(url)) {
+    try (PreparedStatement ps =
+            conn.prepareStatement("INSERT INTO users(name, active) VALUES (?, ?)")) {
+        ps.setString(1, "alice");
+        ps.setBoolean(2, true);      // stored as INTEGER 1/0 (D1 convention)
+        ps.executeUpdate();
+    }
+    try (Statement s = conn.createStatement();
+         ResultSet rs = s.executeQuery("SELECT id, name FROM users")) {
+        while (rs.next()) {
+            System.out.println(rs.getLong("id") + " " + rs.getString("name"));
+        }
+    }
+}
+```
+
+The driver self-registers via `ServiceLoader` — no `Class.forName` needed.
+
+### JDBC URLs
+
+```
+jdbc:cloudflare-d1:rest://<account_id>/<database_id>?token=<API_TOKEN>
+jdbc:cloudflare-d1:proxy://<worker-host>[/<base-path>]?token=<SHARED_SECRET>
+```
+
+Optional properties (query string or `Properties`): `connectTimeoutMillis`
+(default 10000), `requestTimeoutMillis` (default 30000), `apiBase` (REST),
+`scheme` (proxy, default `https`). Username/password are unused — the token in
+the URL is the credential.
+
+### Transactions & batches
+
+D1 has **no interactive transactions** (each HTTP request auto-commits).
+The driver maps JDBC onto what D1 actually guarantees:
+
+- `setAutoCommit(false)` buffers writes client-side; `commit()` sends them as
+  **one atomic batch** (all-or-nothing on both transports); `rollback()` discards
+  the buffer. Reads inside a manual transaction do not see buffered writes.
+- `executeBatch()` chunks at 1,000 statements (a D1 ceiling); each chunk is
+  atomic, the whole batch is not.
+- A manual transaction larger than 1,000 statements is rejected rather than
+  silently split.
+
+### Limits (enforced client-side, fail fast)
+
+| Limit | Value |
+|---|---|
+| SQL statement length | 100,000 bytes |
+| Bound parameters / statement | 100 |
+| String/BLOB value size | 2,000,000 bytes |
+| Statements / atomic batch | 1,000 |
+
+## DBeaver / GUI tools
+
+`DatabaseMetaData` catalog introspection (`getTables`, `getColumns`,
+`getPrimaryKeys`, `getIndexInfo`, `getImportedKeys`, …) is implemented, so
+generic-JDBC tools can browse D1 schemas.
+
+1. **Database → Driver Manager → New**: set *Class Name*
+   `dev.mackerel.d1jdbc.D1Driver`, add the driver jar under *Libraries*.
+2. *URL template*: `jdbc:cloudflare-d1:rest://{account_id}/{database_id}?token={token}`.
+3. New connection → paste your full JDBC URL. Leave **username/password empty**
+   (tick *No authentication* to stop prompts).
+
+## Design & internals
+
+- [`docs/DESIGN.md`](docs/DESIGN.md) — wire contract analysis (from
+  `workers-sdk`/`workerd` sources), JDBC mapping spec, confirmed limits and
+  corrections from the official docs (§9), all verified live against real D1.
+- [`proxy/`](proxy/) — the transport-B Worker (deploy once, reuse from any JVM).
+- Type mapping: SQLite dynamic typing → JDBC via declared-type affinity;
+  `boolean → 1/0`, `byte[] ↔ JSON number array` (matches D1's own BLOB
+  representation), dates/times as ISO-8601 TEXT.
+
+## Testing
+
+- **Offline**: 113 unit tests against a mock transport — `./gradlew test` or the
+  javac + JUnit-console path used in [CI](.github/workflows/ci.yml).
+- **Live e2e (opt-in)**: 15 tests against a real D1 database, auto-skipped
+  unless credentials are provided — see [`docs/E2E.md`](docs/E2E.md).
+
+## Status & roadmap
+
+Working driver, live-verified on both transports. Not yet battle-tested in
+production. Notable gaps: no streaming cursors (results are fully
+materialized; page with `LIMIT/OFFSET`), duplicate identically-named result
+columns collapse on the proxy transport (REST is fully faithful), no
+interactive transactions (a D1 platform constraint, not a driver gap).
+
+## License
+
+[MIT](LICENSE)

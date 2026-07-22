@@ -1,5 +1,6 @@
 plugins {
     `java-library`
+    `maven-publish`
 }
 
 group = "dev.mackerel"
@@ -10,6 +11,42 @@ java {
         languageVersion = JavaLanguageVersion.of(17)
     }
     withSourcesJar()
+    withJavadocJar()
+}
+
+tasks.withType<Javadoc>().configureEach {
+    // Javadoc completeness is not a release gate; don't fail on doclint nits.
+    (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            from(components["java"])
+            pom {
+                name = "d1-jdbc"
+                description =
+                    "JDBC driver for Cloudflare D1 — zero-dependency, dual transport (REST API / self-deployed Worker proxy)"
+                url = "https://github.com/mack-erel/d1-jdbc"
+                licenses {
+                    license {
+                        name = "MIT License"
+                        url = "https://opensource.org/licenses/MIT"
+                    }
+                }
+                developers {
+                    developer {
+                        id = "mack-erel"
+                        name = "Henry Jang"
+                    }
+                }
+                scm {
+                    url = "https://github.com/mack-erel/d1-jdbc"
+                    connection = "scm:git:https://github.com/mack-erel/d1-jdbc.git"
+                }
+            }
+        }
+    }
 }
 
 repositories {
