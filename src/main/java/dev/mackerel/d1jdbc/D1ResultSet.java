@@ -48,6 +48,12 @@ public final class D1ResultSet implements ResultSet {
     private boolean closed = false;
     private int fetchSizeHint = 0; // advisory only; no streaming cursor (DESIGN 4-3)
 
+    /**
+     * @param statement the producing statement, or {@code null} for
+     *        {@link java.sql.DatabaseMetaData}-produced result sets (JDBC
+     *        permits {@link #getStatement()} to return {@code null} for those)
+     * @param result    the materialized D1 response
+     */
     D1ResultSet(D1Statement statement, D1QueryResult result) {
         this.statement = statement;
         this.columns = result.columns();
