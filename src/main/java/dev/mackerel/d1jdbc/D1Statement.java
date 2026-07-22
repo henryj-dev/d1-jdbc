@@ -1,5 +1,6 @@
 package dev.mackerel.d1jdbc;
 
+import dev.mackerel.d1jdbc.internal.D1Limits;
 import dev.mackerel.d1jdbc.transport.D1Meta;
 import dev.mackerel.d1jdbc.transport.D1QueryResult;
 import dev.mackerel.d1jdbc.transport.D1Request;
@@ -12,6 +13,7 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.SQLWarning;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -55,6 +57,7 @@ public class D1Statement implements Statement {
      */
     protected ResultSet doQuery(String sql, List<Object> params) throws SQLException {
         checkOpen();
+        D1Codec.validateStatement(sql, params);
         try {
             D1QueryResult result = connection.transport()
                     .query(sql, params, connection.bookmark());
@@ -75,6 +78,7 @@ public class D1Statement implements Statement {
      */
     protected long doUpdate(String sql, List<Object> params) throws SQLException {
         checkOpen();
+        D1Codec.validateStatement(sql, params);
         currentResultSet = null;
         if (!connection.isAutoCommitInternal()) {
             connection.bufferStatement(sql, params);
@@ -99,6 +103,7 @@ public class D1Statement implements Statement {
      */
     protected boolean doExecute(String sql, List<Object> params) throws SQLException {
         checkOpen();
+        D1Codec.validateStatement(sql, params);
         if (!connection.isAutoCommitInternal()) {
             // In a manual transaction, treat as a buffered write.
             connection.bufferStatement(sql, params);
@@ -190,31 +195,78 @@ public class D1Statement implements Statement {
         batch.clear();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The accumulated statements are split into chunks of at most
+     * {@link D1Limits#MAX_ATOMIC_BATCH_STATEMENTS} and each chunk is sent as one
+     * transport batch. <strong>The JDBC batch is therefore NOT guaranteed atomic
+     * across chunks</strong> — each chunk is atomic only on transports that
+     * support atomic batches (DESIGN 9-1).
+     */
     @Override
     public int[] executeBatch() throws SQLException {
+        return toIntCounts(executeLargeBatch());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Same chunking and atomicity caveats as {@link #executeBatch()}.
+     */
+    @Override
+    public long[] executeLargeBatch() throws SQLException {
         checkOpen();
         List<String> toRun = new ArrayList<>(batch);
         batch.clear();
         if (toRun.isEmpty()) {
-            return new int[0];
+            return new long[0];
         }
         List<D1Request> reqs = new ArrayList<>(toRun.size());
         for (String sql : toRun) {
             reqs.add(new D1Request(sql, List.of()));
         }
+        return runBatchChunked(reqs);
+    }
+
+    /**
+     * Validate every batched statement against the D1 per-statement limits, then
+     * send the requests in chunks of at most
+     * {@link D1Limits#MAX_ATOMIC_BATCH_STATEMENTS}, threading the session
+     * bookmark from one chunk to the next. Per-statement update counts come from
+     * {@code meta.changes}; a statement whose result the transport did not
+     * report yields {@link Statement#SUCCESS_NO_INFO}. Not atomic across chunks.
+     */
+    protected long[] runBatchChunked(List<D1Request> reqs) throws SQLException {
+        for (D1Request r : reqs) {
+            D1Codec.validateStatement(r.sql(), r.params());
+        }
+        long[] counts = new long[reqs.size()];
+        Arrays.fill(counts, Statement.SUCCESS_NO_INFO);
         try {
-            List<D1QueryResult> results =
-                    connection.transport().batch(reqs, connection.bookmark());
-            int[] counts = new int[results.size()];
-            for (int i = 0; i < results.size(); i++) {
-                D1QueryResult r = results.get(i);
-                connection.updateBookmark(r.bookmark());
-                counts[i] = (int) r.meta().changes();
+            for (int from = 0; from < reqs.size(); from += D1Limits.MAX_ATOMIC_BATCH_STATEMENTS) {
+                int to = Math.min(from + D1Limits.MAX_ATOMIC_BATCH_STATEMENTS, reqs.size());
+                List<D1QueryResult> results =
+                        connection.transport().batch(reqs.subList(from, to), connection.bookmark());
+                for (int i = 0; i < results.size() && from + i < to; i++) {
+                    D1QueryResult r = results.get(i);
+                    connection.updateBookmark(r.bookmark());
+                    counts[from + i] = r.meta().changes();
+                }
             }
             return counts;
         } catch (TransportException e) {
             throw D1Codec.toSQLException(e);
         }
+    }
+
+    /** Narrow large-batch counts to {@code int[]} ({@code SUCCESS_NO_INFO} survives the cast). */
+    protected static int[] toIntCounts(long[] large) {
+        int[] out = new int[large.length];
+        for (int i = 0; i < large.length; i++) {
+            out[i] = (int) large[i];
+        }
+        return out;
     }
 
     // -------------------------------------------------------------- results

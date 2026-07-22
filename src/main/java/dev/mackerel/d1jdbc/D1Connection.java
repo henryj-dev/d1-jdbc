@@ -1,5 +1,6 @@
 package dev.mackerel.d1jdbc;
 
+import dev.mackerel.d1jdbc.internal.D1Limits;
 import dev.mackerel.d1jdbc.transport.Capabilities;
 import dev.mackerel.d1jdbc.transport.D1QueryResult;
 import dev.mackerel.d1jdbc.transport.D1Request;
@@ -84,9 +85,11 @@ public final class D1Connection implements Connection {
 
     /**
      * Buffer a mutating statement when {@code autoCommit=false}. Flushed as a
-     * single atomic batch on {@link #commit()}.
+     * single atomic batch on {@link #commit()}. Each statement is validated
+     * against the D1 per-statement limits (DESIGN 9-1) before it is accepted.
      */
-    void bufferStatement(String sql, List<Object> params) {
+    void bufferStatement(String sql, List<Object> params) throws SQLException {
+        D1Codec.validateStatement(sql, params);
         buffer.add(new D1Request(sql, new ArrayList<>(params)));
     }
 
@@ -215,6 +218,18 @@ public final class D1Connection implements Connection {
         }
         if (buffer.isEmpty()) {
             return;
+        }
+        if (buffer.size() > D1Limits.MAX_ATOMIC_BATCH_STATEMENTS) {
+            // The manual-transaction buffer must be flushed as ONE atomic batch;
+            // beyond the D1 batch ceiling atomicity cannot be guaranteed, so fail
+            // loudly instead of silently splitting. The buffer is kept so the
+            // caller can rollback().
+            throw new SQLException(
+                    "Cannot commit " + buffer.size() + " buffered statements atomically;"
+                            + " D1 allows at most " + D1Limits.MAX_ATOMIC_BATCH_STATEMENTS
+                            + " statements per atomic batch (DESIGN 9-1). Commit in smaller"
+                            + " units or rollback().",
+                    "54000");
         }
         List<D1Request> toSend = new ArrayList<>(buffer);
         buffer.clear();

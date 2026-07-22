@@ -1,5 +1,6 @@
 package dev.mackerel.d1jdbc;
 
+import dev.mackerel.d1jdbc.internal.D1Limits;
 import dev.mackerel.d1jdbc.internal.Json;
 import dev.mackerel.d1jdbc.transport.D1Meta;
 import dev.mackerel.d1jdbc.transport.D1QueryResult;
@@ -31,6 +32,54 @@ import java.util.Map;
 public final class D1Codec {
 
     private D1Codec() {
+    }
+
+    // ------------------------------------------------------------ limit guards
+
+    /**
+     * Guard one statement against the confirmed per-statement D1 limits
+     * (DESIGN 9-1) before it is sent, buffered, or batched.
+     *
+     * @throws SQLException SQLState {@code 54000} (program limit exceeded) when
+     *         the SQL exceeds {@link D1Limits#MAX_SQL_BYTES} UTF-8 bytes or more
+     *         than {@link D1Limits#MAX_BOUND_PARAMS} parameters are bound
+     */
+    public static void validateStatement(String sql, List<Object> params) throws SQLException {
+        long sqlBytes = utf8Length(sql == null ? "" : sql);
+        if (sqlBytes > D1Limits.MAX_SQL_BYTES) {
+            throw new SQLException(
+                    "SQL statement is " + sqlBytes + " UTF-8 bytes; D1 allows at most "
+                            + D1Limits.MAX_SQL_BYTES + " bytes per statement (DESIGN 9-1)",
+                    "54000");
+        }
+        int paramCount = params == null ? 0 : params.size();
+        if (paramCount > D1Limits.MAX_BOUND_PARAMS) {
+            throw new SQLException(
+                    "Statement binds " + paramCount + " parameters; D1 allows at most "
+                            + D1Limits.MAX_BOUND_PARAMS + " bound parameters per statement"
+                            + " (DESIGN 9-1)",
+                    "54000");
+        }
+    }
+
+    /** UTF-8 encoded byte length of {@code s}, computed without allocating the bytes. */
+    public static long utf8Length(String s) {
+        long bytes = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x80) {
+                bytes += 1;
+            } else if (c < 0x800) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(c) && i + 1 < s.length()
+                    && Character.isLowSurrogate(s.charAt(i + 1))) {
+                bytes += 4; // supplementary code point (surrogate pair)
+                i++;
+            } else {
+                bytes += 3;
+            }
+        }
+        return bytes;
     }
 
     // --------------------------------------------------------- request bodies

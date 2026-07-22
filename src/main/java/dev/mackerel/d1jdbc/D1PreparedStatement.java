@@ -1,9 +1,8 @@
 package dev.mackerel.d1jdbc;
 
+import dev.mackerel.d1jdbc.internal.D1Limits;
 import dev.mackerel.d1jdbc.internal.D1Value;
-import dev.mackerel.d1jdbc.transport.D1QueryResult;
 import dev.mackerel.d1jdbc.transport.D1Request;
-import dev.mackerel.d1jdbc.transport.TransportException;
 
 import java.io.InputStream;
 import java.io.Reader;
@@ -92,31 +91,36 @@ public final class D1PreparedStatement extends D1Statement implements PreparedSt
         paramBatch.add(currentParams());
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Chunked into transport batches of at most
+     * {@link D1Limits#MAX_ATOMIC_BATCH_STATEMENTS}; NOT guaranteed atomic across
+     * chunks (see {@link D1Statement#executeBatch()}).
+     */
     @Override
     public int[] executeBatch() throws SQLException {
+        return toIntCounts(executeLargeBatch());
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Same chunking and atomicity caveats as {@link #executeBatch()}.
+     */
+    @Override
+    public long[] executeLargeBatch() throws SQLException {
         checkOpen();
         List<List<Object>> toRun = new ArrayList<>(paramBatch);
         paramBatch.clear();
         if (toRun.isEmpty()) {
-            return new int[0];
+            return new long[0];
         }
         List<D1Request> reqs = new ArrayList<>(toRun.size());
         for (List<Object> p : toRun) {
             reqs.add(new D1Request(sql, p));
         }
-        try {
-            List<D1QueryResult> results =
-                    connection.transport().batch(reqs, connection.bookmark());
-            int[] counts = new int[results.size()];
-            for (int i = 0; i < results.size(); i++) {
-                D1QueryResult r = results.get(i);
-                connection.updateBookmark(r.bookmark());
-                counts[i] = (int) r.meta().changes();
-            }
-            return counts;
-        } catch (TransportException e) {
-            throw D1Codec.toSQLException(e);
-        }
+        return runBatchChunked(reqs);
     }
 
     // ------------------------- String-arg forms are illegal on PreparedStatement
@@ -195,11 +199,15 @@ public final class D1PreparedStatement extends D1Statement implements PreparedSt
 
     @Override
     public void setString(int parameterIndex, String x) throws SQLException {
+        checkStringSize(x);
         setParam(parameterIndex, x);
     }
 
     @Override
     public void setBytes(int parameterIndex, byte[] x) throws SQLException {
+        if (x != null) {
+            checkValueSize(x.length, "byte[]");
+        }
         setParam(parameterIndex, x);
     }
 
@@ -256,9 +264,7 @@ public final class D1PreparedStatement extends D1Statement implements PreparedSt
             return;
         }
         long len = x.length();
-        if (len > Integer.MAX_VALUE) {
-            throw new SQLException("BLOB too large to buffer: " + len + " bytes");
-        }
+        checkValueSize(len, "BLOB"); // before buffering: the limit is far below Integer.MAX_VALUE
         setParam(parameterIndex, x.getBytes(1, (int) len));
     }
 
@@ -377,6 +383,7 @@ public final class D1PreparedStatement extends D1Statement implements PreparedSt
 
     @Override
     public void setNString(int parameterIndex, String value) throws SQLException {
+        checkStringSize(value);
         setParam(parameterIndex, value);
     }
 
@@ -423,5 +430,28 @@ public final class D1PreparedStatement extends D1Statement implements PreparedSt
 
     private static SQLFeatureNotSupportedException unsupported(String name) {
         return new SQLFeatureNotSupportedException(name + " is not supported by the D1 driver");
+    }
+
+    // ------------------------------------------------------------ limit guards
+
+    /** Guard a String value against {@link D1Limits#MAX_VALUE_BYTES} (UTF-8 encoded size). */
+    private static void checkStringSize(String value) throws SQLException {
+        if (value != null) {
+            checkValueSize(D1Codec.utf8Length(value), "String");
+        }
+    }
+
+    /**
+     * Fail fast (SQLState {@code 22001}, data too long) when a bound value
+     * exceeds the confirmed D1 per-value limit of
+     * {@link D1Limits#MAX_VALUE_BYTES} bytes (DESIGN 9-1).
+     */
+    private static void checkValueSize(long bytes, String kind) throws SQLException {
+        if (bytes > D1Limits.MAX_VALUE_BYTES) {
+            throw new SQLException(
+                    kind + " value is " + bytes + " bytes; D1 allows at most "
+                            + D1Limits.MAX_VALUE_BYTES + " bytes per value (DESIGN 9-1)",
+                    "22001");
+        }
     }
 }

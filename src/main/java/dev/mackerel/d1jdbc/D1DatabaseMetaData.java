@@ -1,5 +1,6 @@
 package dev.mackerel.d1jdbc;
 
+import dev.mackerel.d1jdbc.internal.D1Limits;
 import dev.mackerel.d1jdbc.transport.Capabilities;
 
 import java.sql.Connection;
@@ -13,11 +14,16 @@ import java.sql.SQLFeatureNotSupportedException;
  * Minimal {@link DatabaseMetaData} for Cloudflare D1. Feature queries return
  * sensible booleans and transport-specific capabilities
  * ({@link Capabilities#supportsAtomicBatch()} drives
- * {@link #supportsBatchUpdates()}). Catalog-introspection methods that return a
- * {@link ResultSet} are not implemented and throw
+ * {@link #supportsTransactions()}); size limits reflect the confirmed D1
+ * platform limits in {@link D1Limits} (DESIGN 9-1), with {@code 0} meaning
+ * "unknown / no documented limit" per JDBC convention. Catalog-introspection
+ * methods that return a {@link ResultSet} are not implemented and throw
  * {@link SQLFeatureNotSupportedException}.
  */
 public final class D1DatabaseMetaData implements DatabaseMetaData {
+
+    /** Confirmed D1 column-count limit: 100 columns per table (DESIGN 9-1). */
+    private static final int MAX_COLUMNS = 100;
 
     private final D1Connection connection;
     private final Capabilities capabilities;
@@ -114,7 +120,9 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public boolean supportsBatchUpdates() {
-        return capabilities.supportsAtomicBatch();
+        // executeBatch works on every transport (chunked; per-chunk atomicity
+        // still depends on Capabilities.supportsAtomicBatch()).
+        return true;
     }
 
     @Override
@@ -638,32 +646,32 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public int getMaxStatementLength() {
-        return 0;
+        return D1Limits.MAX_SQL_BYTES;
     }
 
     @Override
     public int getMaxColumnsInTable() {
-        return 0;
+        return MAX_COLUMNS;
     }
 
     @Override
     public int getMaxColumnsInSelect() {
-        return 0;
+        return MAX_COLUMNS;
     }
 
     @Override
     public int getMaxColumnsInGroupBy() {
-        return 0;
+        return MAX_COLUMNS;
     }
 
     @Override
     public int getMaxColumnsInOrderBy() {
-        return 0;
+        return MAX_COLUMNS;
     }
 
     @Override
     public int getMaxColumnsInIndex() {
-        return 0;
+        return MAX_COLUMNS;
     }
 
     @Override
@@ -713,22 +721,22 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
 
     @Override
     public int getMaxRowSize() {
-        return 0;
+        return D1Limits.MAX_VALUE_BYTES;
     }
 
     @Override
     public boolean doesMaxRowSizeIncludeBlobs() {
-        return false;
+        return true;
     }
 
     @Override
     public int getMaxBinaryLiteralLength() {
-        return 0;
+        return D1Limits.MAX_VALUE_BYTES;
     }
 
     @Override
     public int getMaxCharLiteralLength() {
-        return 0;
+        return D1Limits.MAX_VALUE_BYTES;
     }
 
     // -------------------------- deletes/inserts/updates visibility
