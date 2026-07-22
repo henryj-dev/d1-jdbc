@@ -1,0 +1,37 @@
+# Cloudflare D1 JDBC — E2E test credentials (OPT-IN)
+#
+# Copy this file to `e2e.local.properties` (same directory, repo root) and fill
+# in the values, OR export the same keys as environment variables. Environment
+# variables take precedence over this file. When neither source supplies the
+# credentials for a transport, the matching E2E tests are SKIPPED (never failed),
+# so the offline suite is unaffected.
+#
+#   cp e2e.local.properties.example e2e.local.properties
+#
+# `e2e.local.properties` is gitignored. NEVER commit real credentials. Use a
+# least-privilege API token and roll (revoke) it after your test run.
+
+# --- REST transport (RestTransportE2ETest, RestBatchAtomicityProbe) ---
+
+# Cloudflare account id. Dashboard -> any domain -> Overview (right sidebar),
+# or: `wrangler whoami`.
+D1_ACCOUNT_ID=
+
+# D1 database id (uuid). Create one with `wrangler d1 create <name>` (the output
+# prints database_id), or Dashboard -> Storage & Databases -> D1.
+D1_DATABASE_ID=
+
+# API token with the MINIMAL scope `Account · D1 · Edit`.
+# Create at: https://dash.cloudflare.com/profile/api-tokens -> Create Token ->
+# Custom token -> Permissions: Account | D1 | Edit. Roll it after use.
+D1_API_TOKEN=
+
+# --- Proxy transport (ProxyTransportE2ETest) ---
+
+# Base URL of your deployed proxy Worker (see proxy/README.md for deploy steps).
+# e.g. https://d1-jdbc-proxy.<your-subdomain>.workers.dev
+D1_PROXY_URL=
+
+# Shared secret the proxy Worker checks (whatever you configured when deploying
+# the Worker, e.g. via `wrangler secret put`).
+D1_PROXY_SECRET=
