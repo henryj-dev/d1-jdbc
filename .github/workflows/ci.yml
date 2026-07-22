@@ -52,10 +52,8 @@ jobs:
           java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.14"
 
-      # Compiles main+test and runs the offline suite via useJUnitPlatform();
-      # e2e classes abort their assumptions without credentials (reported as
-      # skipped, not failed).
-      - run: gradle build
+      # Uses the committed Gradle wrapper (same path JitPack takes). Compiles
+      # main+test and runs the offline suite via useJUnitPlatform(); e2e classes
+      # abort their assumptions without credentials (reported as skipped).
+      - run: ./gradlew build
