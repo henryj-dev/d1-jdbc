@@ -1,0 +1,18 @@
+{
+  // Cloudflare Worker that fronts a D1 database for the JDBC driver's
+  // "proxy" transport (transport B). Deploy once; the JVM app reuses it.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "d1-jdbc-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-04-28",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      // Replace both with your database: `wrangler d1 list` or the dashboard.
+      "database_name": "<your-d1-database-name>",
+      "database_id": "<uuid>"
+    }
+  ]
+  // The shared secret is NOT stored here. Set it as a secret:
+  //   wrangler secret put PROXY_SECRET
+}

@@ -14,3 +14,9 @@ build/
 # Secrets
 .env
 *.local
+# E2E test credentials (opt-in, never committed). The template
+# e2e.local.properties.example IS committed; the real file is not.
+e2e.local.properties
+
+# wrangler local state
+.wrangler/
