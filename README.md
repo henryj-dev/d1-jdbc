@@ -30,7 +30,7 @@ repositories {
     maven("https://jitpack.io")
 }
 dependencies {
-    implementation("com.github.mack-erel:d1-jdbc:v0.1.0")
+    implementation("com.github.mack-erel:d1-jdbc:v0.1.1")
 }
 ```
 
@@ -40,7 +40,7 @@ dependencies {
 <dependency>
   <groupId>com.github.mack-erel</groupId>
   <artifactId>d1-jdbc</artifactId>
-  <version>v0.1.0</version>
+  <version>v0.1.1</version>
 </dependency>
 ```
 
