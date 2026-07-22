@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  offline-tests:
+    name: Offline tests (javac + JUnit console)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Fetch JUnit console launcher
+        run: |
+          mkdir -p build/testlib
+          curl -fsSL -o build/testlib/junit-console.jar \
+            https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/1.10.2/junit-platform-console-standalone-1.10.2.jar
+
+      - name: Compile (release 17, all lints as errors)
+        run: |
+          mkdir -p build/classes build/test-classes
+          find src/main/java -name '*.java' > build/main-sources.txt
+          javac --release 17 -Xlint:all -Werror -d build/classes @build/main-sources.txt
+          find src/test/java -name '*.java' > build/test-sources.txt
+          javac --release 17 -cp build/classes:build/testlib/junit-console.jar \
+            -d build/test-classes @build/test-sources.txt
+
+      # E2E tests are tagged "e2e" and auto-skip without credentials anyway;
+      # exclude them here so the offline job is fully deterministic.
+      - name: Run offline suite
+        run: |
+          java -jar build/testlib/junit-console.jar execute \
+            --class-path build/classes:build/test-classes:src/main/resources \
+            --scan-classpath --exclude-tag e2e --fail-if-no-tests
+
+  gradle-build:
+    name: Gradle build (validates build.gradle.kts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14"
+
+      # Compiles main+test and runs the offline suite via useJUnitPlatform();
+      # e2e classes abort their assumptions without credentials (reported as
+      # skipped, not failed).
+      - run: gradle build
