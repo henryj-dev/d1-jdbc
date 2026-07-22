@@ -38,7 +38,7 @@ import java.util.concurrent.Executor;
  * {@link #commit()} as a single {@link D1Transport#batch batch} (atomic on the
  * proxy transport, best-effort on REST); {@link #rollback()} discards the
  * buffer. The connection carries the latest session bookmark
- * ({@code x-cf-d1-session-commit-token}) for read-your-write consistency.
+ * ({@code x-d1-bookmark}) for read-your-write consistency.
  */
 public final class D1Connection implements Connection {
 

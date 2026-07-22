@@ -9,7 +9,7 @@ import java.util.List;
  * data where each cell is one of the D1 runtime types
  * (Long / Double / String / byte[] / null). {@code meta} carries change counts
  * and the generated rowid; {@code bookmark} is the session commit token
- * ({@code x-cf-d1-session-commit-token}) returned by this response, if any.
+ * ({@code x-d1-bookmark}) returned by this response, if any.
  */
 public record D1QueryResult(
         List<String> columns,

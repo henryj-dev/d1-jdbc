@@ -96,6 +96,17 @@ public final class D1Codec {
             return D1Meta.EMPTY;
         }
         Map<String, Object> m = (Map<String, Object>) metaNode;
+        double sqlDurationMs = 0.0;
+        Object timings = m.get("timings");
+        if (timings instanceof Map) {
+            sqlDurationMs = asDouble(((Map<String, Object>) timings).get("sql_duration_ms"));
+        }
+        // served_by_colo is the current field; fall back to the legacy single
+        // served_by string if an older endpoint (e.g. miniflare) returns it.
+        Object colo = m.get("served_by_colo");
+        if (colo == null) {
+            colo = m.get("served_by");
+        }
         return new D1Meta(
                 asLong(m.get("changes")),
                 asLong(m.get("last_row_id")),
@@ -104,7 +115,10 @@ public final class D1Codec {
                 asDouble(m.get("duration")),
                 asLong(m.get("size_after")),
                 Boolean.TRUE.equals(m.get("changed_db")),
-                m.get("served_by") == null ? null : String.valueOf(m.get("served_by")));
+                colo == null ? null : String.valueOf(colo),
+                Boolean.TRUE.equals(m.get("served_by_primary")),
+                m.get("served_by_region") == null ? null : String.valueOf(m.get("served_by_region")),
+                sqlDurationMs);
     }
 
     // ------------------------------------------------------------- error map

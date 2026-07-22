@@ -22,12 +22,14 @@ import java.util.Map;
  * is a D1 result passthrough (no CF envelope): the Worker normalizes it to
  * {@code {columns, rows, meta}} (and an array thereof for {@code /batch}).
  *
- * <p>The session bookmark header ({@code x-cf-d1-session-commit-token}) is
+ * <p>The session bookmark header ({@code x-d1-bookmark}) is
  * passed through in both directions to preserve read-your-write consistency.
  */
 public final class ProxyTransport implements D1Transport {
 
-    private static final String BOOKMARK_HEADER = "x-cf-d1-session-commit-token";
+    // Public D1 bookmark header (DESIGN 9-3). The proxy Worker uses the binding's
+    // withSession()/getBookmark() and echoes this header, so sessions work here.
+    private static final String BOOKMARK_HEADER = "x-d1-bookmark";
 
     private final HttpClient client;
     private final String queryEndpoint;

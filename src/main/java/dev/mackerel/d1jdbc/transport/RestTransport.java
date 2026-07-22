@@ -29,7 +29,9 @@ import java.util.Map;
  */
 public final class RestTransport implements D1Transport {
 
-    private static final String BOOKMARK_HEADER = "x-cf-d1-session-commit-token";
+    // Public D1 bookmark header (DESIGN 9-3). Sessions are binding-only, so this
+    // is inert over the REST API; capabilities() reports supportsSessions=false.
+    private static final String BOOKMARK_HEADER = "x-d1-bookmark";
     private static final String DEFAULT_API_BASE = "https://api.cloudflare.com/client/v4";
 
     private final HttpClient client;
@@ -174,7 +176,10 @@ public final class RestTransport implements D1Transport {
 
     @Override
     public Capabilities capabilities() {
-        return new Capabilities(false, true, "rest");
+        // supportsAtomicBatch: false pending a live probe of the REST
+        // {batch:[...]} form (DESIGN 9-2). supportsSessions: false — the D1
+        // Sessions API is not available over REST (DESIGN 9-3).
+        return new Capabilities(false, false, "rest");
     }
 
     @Override

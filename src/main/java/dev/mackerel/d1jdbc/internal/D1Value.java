@@ -15,7 +15,9 @@ import java.time.format.DateTimeFormatter;
  *
  * <p>Conventions fixed by this driver (DESIGN section 7 open item):
  * <ul>
- *   <li>{@code boolean} -> {@code 1} / {@code 0} (D1 has no boolean type)</li>
+ *   <li>{@code boolean} -> {@code 1} / {@code 0} (the JSON wire has no
+ *       boolean->INTEGER coercion; this matches D1's own native Boolean->INTEGER
+ *       binding and 0/1 read-back — DESIGN 9-4)</li>
  *   <li>{@link BigDecimal} / {@link BigInteger} -> canonical string (preserves precision)</li>
  *   <li>{@link Date} -> ISO {@code yyyy-MM-dd} string</li>
  *   <li>{@link Time} -> {@code HH:mm:ss} string</li>

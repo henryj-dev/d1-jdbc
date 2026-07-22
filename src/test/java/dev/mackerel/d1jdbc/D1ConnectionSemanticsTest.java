@@ -28,7 +28,8 @@ class D1ConnectionSemanticsTest {
 
     private static D1QueryResult insertMeta(long changes, long lastRowId) {
         return new D1QueryResult(List.of(), List.of(),
-                new D1Meta(changes, lastRowId, 0, changes, 0.0, 0, true, null), null);
+                new D1Meta(changes, lastRowId, 0, changes, 0.0, 0, true, null, false, null, 0.0),
+                null);
     }
 
     // -------------------------------------------------- autoCommit buffering

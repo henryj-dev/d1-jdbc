@@ -7,11 +7,11 @@
  *
  * The response shape is normalized to ROWS_AND_COLUMNS so the shared D1Codec on
  * the JVM side can parse it directly (no Cloudflare envelope). The session
- * bookmark header (x-cf-d1-session-commit-token) is threaded through in both
+ * bookmark header (x-d1-bookmark) is threaded through in both
  * directions to preserve read-your-write consistency.
  */
 
-const BOOKMARK_HEADER = "x-cf-d1-session-commit-token";
+const BOOKMARK_HEADER = "x-d1-bookmark";
 
 export interface Env {
   DB: D1Database;
@@ -108,7 +108,7 @@ const EMPTY_META = {
   rows_read: 0,
   rows_written: 0,
   duration: 0,
-  served_by: "d1-jdbc-proxy",
+  served_by_primary: true,
 };
 
 /**

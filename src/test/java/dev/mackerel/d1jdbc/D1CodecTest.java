@@ -105,13 +105,25 @@ class D1CodecTest {
     @Test
     void parsesMetaChangesAndLastRowId() {
         D1Meta meta = D1Codec.parseMeta(Json.parseObject(
-                "{\"changes\":3,\"last_row_id\":99,\"rows_written\":3,"
-                        + "\"duration\":1.25,\"served_by\":\"miniflare\"}"));
+                "{\"changes\":3,\"last_row_id\":99,\"rows_written\":3,\"duration\":1.25,"
+                        + "\"served_by_colo\":\"DFW\",\"served_by_primary\":true,"
+                        + "\"served_by_region\":\"WNAM\",\"timings\":{\"sql_duration_ms\":0.9}}"));
         assertEquals(3L, meta.changes());
         assertEquals(99L, meta.lastRowId());
         assertEquals(3L, meta.rowsWritten());
         assertEquals(1.25, meta.duration());
-        assertEquals("miniflare", meta.servedBy());
+        assertEquals("DFW", meta.servedByColo());
+        assertTrue(meta.servedByPrimary());
+        assertEquals("WNAM", meta.servedByRegion());
+        assertEquals(0.9, meta.sqlDurationMs());
+    }
+
+    @Test
+    void parsesLegacyServedByAsColo() {
+        // miniflare (local sim) still emits a single served_by string.
+        D1Meta meta = D1Codec.parseMeta(Json.parseObject(
+                "{\"changes\":0,\"served_by\":\"miniflare\"}"));
+        assertEquals("miniflare", meta.servedByColo());
     }
 
     @Test
