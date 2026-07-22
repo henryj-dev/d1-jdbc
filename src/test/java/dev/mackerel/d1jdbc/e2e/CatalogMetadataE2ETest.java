@@ -181,6 +181,67 @@ class CatalogMetadataE2ETest {
     }
 
     @Test
+    void absentObjectKindsAreEmptyNotErrors() throws SQLException {
+        DatabaseMetaData md = conn.getMetaData();
+        try (ResultSet rs = md.getProcedures(null, null, null)) {
+            assertEquals(9, rs.getMetaData().getColumnCount(),
+                    "getProcedures has the 9 spec columns");
+            assertEquals("PROCEDURE_NAME", rs.getMetaData().getColumnName(3));
+            assertFalse(rs.next(), "D1 has no stored procedures: empty, not an error");
+        }
+        try (ResultSet rs = md.getFunctions(null, null, null)) {
+            assertEquals(6, rs.getMetaData().getColumnCount(),
+                    "getFunctions has the 6 spec columns");
+            assertEquals("FUNCTION_NAME", rs.getMetaData().getColumnName(3));
+            assertFalse(rs.next(), "D1 exposes no functions: empty, not an error");
+        }
+    }
+
+    @Test
+    void getExportedKeysAndCrossReferenceSeeTheReverseForeignKey() throws SQLException {
+        // Dedicated FK-linked scratch tables, created and dropped here; the
+        // shared d1_jdbc_meta_e2e objects and any user tables stay untouched.
+        String parent = "d1_jdbc_fk_e2e_parent";
+        String child = "d1_jdbc_fk_e2e_child";
+        try (Statement s = conn.createStatement()) {
+            s.executeUpdate("DROP TABLE IF EXISTS " + child);
+            s.executeUpdate("DROP TABLE IF EXISTS " + parent);
+            s.executeUpdate("CREATE TABLE " + parent
+                    + " (id INTEGER PRIMARY KEY, name TEXT)");
+            s.executeUpdate("CREATE TABLE " + child
+                    + " (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES "
+                    + parent + "(id))");
+
+            DatabaseMetaData md = conn.getMetaData();
+            try (ResultSet rs = md.getExportedKeys(null, null, parent)) {
+                assertEquals(14, rs.getMetaData().getColumnCount(),
+                        "exported keys use the 14 spec columns");
+                assertTrue(rs.next(), "the child's FK is exported by the parent");
+                assertEquals("main", rs.getString("PKTABLE_CAT"));
+                assertEquals(parent, rs.getString("PKTABLE_NAME"));
+                assertEquals("id", rs.getString("PKCOLUMN_NAME"));
+                assertEquals(child, rs.getString("FKTABLE_NAME"));
+                assertEquals("parent_id", rs.getString("FKCOLUMN_NAME"));
+                assertEquals(1, rs.getShort("KEY_SEQ"));
+                assertFalse(rs.next(), "exactly one referencing table");
+            }
+            try (ResultSet rs = md.getCrossReference(
+                    null, null, parent, null, null, child)) {
+                assertTrue(rs.next(), "cross-reference finds the (parent, child) FK");
+                assertEquals(parent, rs.getString("PKTABLE_NAME"));
+                assertEquals(child, rs.getString("FKTABLE_NAME"));
+                assertEquals("parent_id", rs.getString("FKCOLUMN_NAME"));
+                assertFalse(rs.next());
+            }
+        } finally {
+            try (Statement s = conn.createStatement()) {
+                s.executeUpdate("DROP TABLE IF EXISTS " + child);
+                s.executeUpdate("DROP TABLE IF EXISTS " + parent);
+            }
+        }
+    }
+
+    @Test
     void staticCatalogListsAndIdentifierQuoting() throws SQLException {
         DatabaseMetaData md = conn.getMetaData();
         assertEquals("\"", md.getIdentifierQuoteString());

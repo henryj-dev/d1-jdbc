@@ -11,7 +11,6 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.RowIdLifetime;
 import java.sql.SQLException;
-import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -34,8 +33,10 @@ import java.util.regex.Pattern;
  * {@link #getImportedKeys getImportedKeys} / {@link #getIndexInfo getIndexInfo}
  * and friends) is implemented on top of {@code sqlite_master} and the SQLite
  * pragmas, executed through the connection's transport exactly like regular
- * statements. Catalog methods that have no SQLite counterpart (procedures,
- * UDTs, privileges, ...) still throw {@link SQLFeatureNotSupportedException}.
+ * statements. Catalog methods for object kinds that do not exist in D1
+ * (procedures, UDTs, privileges, ...) return an <em>empty</em> result set with
+ * the spec column layout — per JDBC convention "there are none" is an empty
+ * list, not an error, and GUI tools (DBeaver, DataGrip) rely on that.
  */
 public final class D1DatabaseMetaData implements DatabaseMetaData {
 
@@ -961,21 +962,34 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
         return names;
     }
 
-    private static SQLFeatureNotSupportedException catalog(String name) {
-        return new SQLFeatureNotSupportedException(
-                name + " catalog introspection is not implemented");
+    /**
+     * An empty metadata result set with the given spec columns, for object
+     * kinds that do not exist in D1/SQLite: per JDBC convention "there are
+     * none" is an empty list, not an error.
+     */
+    private static ResultSet emptyMetadata(String... columns) {
+        return metadataResultSet(List.of(columns), new ArrayList<>());
     }
 
+    // D1/SQLite has no stored procedures -> empty is honest. Columns 4-6 are
+    // "reserved for future use" in the spec; the UNDEF1..3 names follow the
+    // established SQLite (Xerial) driver practice.
     @Override
     public ResultSet getProcedures(String catalog, String schemaPattern,
             String procedureNamePattern) throws SQLException {
-        throw catalog("getProcedures");
+        return emptyMetadata("PROCEDURE_CAT", "PROCEDURE_SCHEM", "PROCEDURE_NAME",
+                "UNDEF1", "UNDEF2", "UNDEF3", "REMARKS", "PROCEDURE_TYPE", "SPECIFIC_NAME");
     }
 
+    // D1/SQLite has no stored procedures -> empty is honest.
     @Override
     public ResultSet getProcedureColumns(String catalog, String schemaPattern,
             String procedureNamePattern, String columnNamePattern) throws SQLException {
-        throw catalog("getProcedureColumns");
+        return emptyMetadata("PROCEDURE_CAT", "PROCEDURE_SCHEM", "PROCEDURE_NAME",
+                "COLUMN_NAME", "COLUMN_TYPE", "DATA_TYPE", "TYPE_NAME", "PRECISION",
+                "LENGTH", "SCALE", "RADIX", "NULLABLE", "REMARKS", "COLUMN_DEF",
+                "SQL_DATA_TYPE", "SQL_DATETIME_SUB", "CHAR_OCTET_LENGTH",
+                "ORDINAL_POSITION", "IS_NULLABLE", "SPECIFIC_NAME");
     }
 
     /**
@@ -1131,28 +1145,37 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
         return metadataResultSet(cols, rows);
     }
 
+    // D1/SQLite has no column privileges (no GRANT/REVOKE) -> empty is honest.
     @Override
     public ResultSet getColumnPrivileges(String catalog, String schema, String table,
             String columnNamePattern) throws SQLException {
-        throw catalog("getColumnPrivileges");
+        return emptyMetadata("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME",
+                "GRANTOR", "GRANTEE", "PRIVILEGE", "IS_GRANTABLE");
     }
 
+    // D1/SQLite has no table privileges (no GRANT/REVOKE) -> empty is honest.
     @Override
     public ResultSet getTablePrivileges(String catalog, String schemaPattern,
             String tableNamePattern) throws SQLException {
-        throw catalog("getTablePrivileges");
+        return emptyMetadata("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME",
+                "GRANTOR", "GRANTEE", "PRIVILEGE", "IS_GRANTABLE");
     }
 
+    // D1 exposes no stable row-identifier metadata (rowid is unsupported here,
+    // see getRowIdLifetime) -> empty is honest.
     @Override
     public ResultSet getBestRowIdentifier(String catalog, String schema, String table,
             int scope, boolean nullable) throws SQLException {
-        throw catalog("getBestRowIdentifier");
+        return emptyMetadata("SCOPE", "COLUMN_NAME", "DATA_TYPE", "TYPE_NAME",
+                "COLUMN_SIZE", "BUFFER_LENGTH", "DECIMAL_DIGITS", "PSEUDO_COLUMN");
     }
 
+    // D1/SQLite has no auto-updating version columns -> empty is honest.
     @Override
     public ResultSet getVersionColumns(String catalog, String schema, String table)
             throws SQLException {
-        throw catalog("getVersionColumns");
+        return emptyMetadata("SCOPE", "COLUMN_NAME", "DATA_TYPE", "TYPE_NAME",
+                "COLUMN_SIZE", "BUFFER_LENGTH", "DECIMAL_DIGITS", "PSEUDO_COLUMN");
     }
 
     /**
@@ -1189,6 +1212,50 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
         return metadataResultSet(cols, rows);
     }
 
+    /** The 14 spec columns shared by getImportedKeys/getExportedKeys/getCrossReference. */
+    private static final List<String> FK_COLUMNS = List.of(
+            "PKTABLE_CAT", "PKTABLE_SCHEM", "PKTABLE_NAME", "PKCOLUMN_NAME",
+            "FKTABLE_CAT", "FKTABLE_SCHEM", "FKTABLE_NAME", "FKCOLUMN_NAME",
+            "KEY_SEQ", "UPDATE_RULE", "DELETE_RULE", "FK_NAME", "PK_NAME",
+            "DEFERRABILITY");
+
+    /**
+     * The {@link #FK_COLUMNS}-shaped rows for the foreign keys declared
+     * <em>on</em> {@code fkTable} (one {@code PRAGMA foreign_key_list} call).
+     * When {@code pkTableFilter} is non-null only rows referencing that parent
+     * table are kept (matched case-insensitively, like SQLite table names).
+     */
+    private List<List<Object>> foreignKeyRows(String fkTable, String pkTableFilter)
+            throws SQLException {
+        List<List<Object>> rows = new ArrayList<>();
+        D1QueryResult fks = runMetadataQuery(
+                "PRAGMA foreign_key_list(" + quoteIdentifier(fkTable) + ")");
+        for (List<Object> fk : fks.rows()) {
+            // foreign_key_list shape: id, seq, table, from, to, on_update, on_delete, match
+            String pkTable = asString(fk.get(2));
+            if (pkTableFilter != null
+                    && (pkTable == null || !pkTable.equalsIgnoreCase(pkTableFilter))) {
+                continue;
+            }
+            rows.add(Arrays.asList(
+                    CATALOG_NAME,                 // PKTABLE_CAT
+                    null,                         // PKTABLE_SCHEM
+                    pkTable,                      // PKTABLE_NAME
+                    asString(fk.get(4)),          // PKCOLUMN_NAME (null = implicit pk)
+                    CATALOG_NAME,                 // FKTABLE_CAT
+                    null,                         // FKTABLE_SCHEM
+                    fkTable,                      // FKTABLE_NAME
+                    asString(fk.get(3)),          // FKCOLUMN_NAME
+                    asLong(fk.get(1)) + 1,        // KEY_SEQ (pragma seq is 0-based)
+                    foreignKeyRule(asString(fk.get(5))), // UPDATE_RULE
+                    foreignKeyRule(asString(fk.get(6))), // DELETE_RULE
+                    null,                         // FK_NAME
+                    null,                         // PK_NAME
+                    (long) importedKeyNotDeferrable));   // DEFERRABILITY
+        }
+        return rows;
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -1200,39 +1267,15 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
     @Override
     public ResultSet getImportedKeys(String catalog, String schema, String table)
             throws SQLException {
-        List<String> cols = List.of("PKTABLE_CAT", "PKTABLE_SCHEM", "PKTABLE_NAME",
-                "PKCOLUMN_NAME", "FKTABLE_CAT", "FKTABLE_SCHEM", "FKTABLE_NAME",
-                "FKCOLUMN_NAME", "KEY_SEQ", "UPDATE_RULE", "DELETE_RULE",
-                "FK_NAME", "PK_NAME", "DEFERRABILITY");
-        List<List<Object>> rows = new ArrayList<>();
         if (table == null || catalogMismatch(catalog)) {
-            return metadataResultSet(cols, rows);
+            return metadataResultSet(FK_COLUMNS, new ArrayList<>());
         }
-        D1QueryResult fks = runMetadataQuery(
-                "PRAGMA foreign_key_list(" + quoteIdentifier(table) + ")");
-        for (List<Object> fk : fks.rows()) {
-            // foreign_key_list shape: id, seq, table, from, to, on_update, on_delete, match
-            rows.add(Arrays.asList(
-                    CATALOG_NAME,                 // PKTABLE_CAT
-                    null,                         // PKTABLE_SCHEM
-                    asString(fk.get(2)),          // PKTABLE_NAME
-                    asString(fk.get(4)),          // PKCOLUMN_NAME (null = implicit pk)
-                    CATALOG_NAME,                 // FKTABLE_CAT
-                    null,                         // FKTABLE_SCHEM
-                    table,                        // FKTABLE_NAME
-                    asString(fk.get(3)),          // FKCOLUMN_NAME
-                    asLong(fk.get(1)) + 1,        // KEY_SEQ (pragma seq is 0-based)
-                    foreignKeyRule(asString(fk.get(5))), // UPDATE_RULE
-                    foreignKeyRule(asString(fk.get(6))), // DELETE_RULE
-                    null,                         // FK_NAME
-                    null,                         // PK_NAME
-                    (long) importedKeyNotDeferrable));   // DEFERRABILITY
-        }
+        List<List<Object>> rows = foreignKeyRows(table, null);
         // Spec ordering: PKTABLE_CAT, PKTABLE_SCHEM, PKTABLE_NAME, KEY_SEQ.
         rows.sort(java.util.Comparator
                 .comparing((List<Object> r) -> asString(r.get(2)))
                 .thenComparingLong(r -> asLong(r.get(8))));
-        return metadataResultSet(cols, rows);
+        return metadataResultSet(FK_COLUMNS, rows);
     }
 
     /** Map a foreign_key_list ON UPDATE/ON DELETE action to the JDBC rule constant. */
@@ -1252,17 +1295,51 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>SQLite has no reverse foreign-key pragma, so this scans every user
+     * table (same visibility rule as {@link #getTables getTables}) and keeps
+     * the {@code PRAGMA foreign_key_list} rows that reference {@code table}.
+     */
     @Override
     public ResultSet getExportedKeys(String catalog, String schema, String table)
             throws SQLException {
-        throw catalog("getExportedKeys");
+        if (table == null || catalogMismatch(catalog)) {
+            return metadataResultSet(FK_COLUMNS, new ArrayList<>());
+        }
+        List<List<Object>> rows = new ArrayList<>();
+        for (String fkTable : userTableNames(null)) {
+            rows.addAll(foreignKeyRows(fkTable, table));
+        }
+        sortByFkTableAndKeySeq(rows);
+        return metadataResultSet(FK_COLUMNS, rows);
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>{@code PRAGMA foreign_key_list} on the foreign (child) table, kept
+     * only where the referenced table is {@code parentTable}.
+     */
     @Override
     public ResultSet getCrossReference(String parentCatalog, String parentSchema,
             String parentTable, String foreignCatalog, String foreignSchema,
             String foreignTable) throws SQLException {
-        throw catalog("getCrossReference");
+        if (parentTable == null || foreignTable == null
+                || catalogMismatch(parentCatalog) || catalogMismatch(foreignCatalog)) {
+            return metadataResultSet(FK_COLUMNS, new ArrayList<>());
+        }
+        List<List<Object>> rows = foreignKeyRows(foreignTable, parentTable);
+        sortByFkTableAndKeySeq(rows);
+        return metadataResultSet(FK_COLUMNS, rows);
+    }
+
+    /** Spec ordering for exported/cross-reference keys: FKTABLE_NAME, KEY_SEQ. */
+    private static void sortByFkTableAndKeySeq(List<List<Object>> rows) {
+        rows.sort(java.util.Comparator
+                .comparing((List<Object> r) -> asString(r.get(6)))
+                .thenComparingLong(r -> asLong(r.get(8))));
     }
 
     /**
@@ -1371,51 +1448,73 @@ public final class D1DatabaseMetaData implements DatabaseMetaData {
         return metadataResultSet(cols, rows);
     }
 
+    // D1/SQLite has no user-defined types -> empty is honest.
     @Override
     public ResultSet getUDTs(String catalog, String schemaPattern, String typeNamePattern,
             int[] types) throws SQLException {
-        throw catalog("getUDTs");
+        return emptyMetadata("TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "CLASS_NAME",
+                "DATA_TYPE", "REMARKS", "BASE_TYPE");
     }
 
+    // D1/SQLite has no type hierarchies -> empty is honest.
     @Override
     public ResultSet getSuperTypes(String catalog, String schemaPattern, String typeNamePattern)
             throws SQLException {
-        throw catalog("getSuperTypes");
+        return emptyMetadata("TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
+                "SUPERTYPE_CAT", "SUPERTYPE_SCHEM", "SUPERTYPE_NAME");
     }
 
+    // D1/SQLite has no table inheritance -> empty is honest.
     @Override
     public ResultSet getSuperTables(String catalog, String schemaPattern, String tableNamePattern)
             throws SQLException {
-        throw catalog("getSuperTables");
+        return emptyMetadata("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "SUPERTABLE_NAME");
     }
 
+    // D1/SQLite has no UDTs, hence no UDT attributes -> empty is honest.
     @Override
     public ResultSet getAttributes(String catalog, String schemaPattern, String typeNamePattern,
             String attributeNamePattern) throws SQLException {
-        throw catalog("getAttributes");
+        return emptyMetadata("TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "ATTR_NAME",
+                "DATA_TYPE", "ATTR_TYPE_NAME", "ATTR_SIZE", "DECIMAL_DIGITS",
+                "NUM_PREC_RADIX", "NULLABLE", "REMARKS", "ATTR_DEF", "SQL_DATA_TYPE",
+                "SQL_DATETIME_SUB", "CHAR_OCTET_LENGTH", "ORDINAL_POSITION",
+                "IS_NULLABLE", "SCOPE_CATALOG", "SCOPE_SCHEMA", "SCOPE_TABLE",
+                "SOURCE_DATA_TYPE");
     }
 
+    // This driver supports no client info properties -> empty is honest.
     @Override
     public ResultSet getClientInfoProperties() throws SQLException {
-        throw catalog("getClientInfoProperties");
+        return emptyMetadata("NAME", "MAX_LEN", "DEFAULT_VALUE", "DESCRIPTION");
     }
 
+    // D1 exposes no user-defined functions through the catalog -> empty is honest.
     @Override
     public ResultSet getFunctions(String catalog, String schemaPattern,
             String functionNamePattern) throws SQLException {
-        throw catalog("getFunctions");
+        return emptyMetadata("FUNCTION_CAT", "FUNCTION_SCHEM", "FUNCTION_NAME",
+                "REMARKS", "FUNCTION_TYPE", "SPECIFIC_NAME");
     }
 
+    // D1 exposes no user-defined functions through the catalog -> empty is honest.
     @Override
     public ResultSet getFunctionColumns(String catalog, String schemaPattern,
             String functionNamePattern, String columnNamePattern) throws SQLException {
-        throw catalog("getFunctionColumns");
+        return emptyMetadata("FUNCTION_CAT", "FUNCTION_SCHEM", "FUNCTION_NAME",
+                "COLUMN_NAME", "COLUMN_TYPE", "DATA_TYPE", "TYPE_NAME", "PRECISION",
+                "LENGTH", "SCALE", "RADIX", "NULLABLE", "REMARKS",
+                "CHAR_OCTET_LENGTH", "ORDINAL_POSITION", "IS_NULLABLE",
+                "SPECIFIC_NAME");
     }
 
+    // D1/SQLite exposes no pseudo columns through the catalog -> empty is honest.
     @Override
     public ResultSet getPseudoColumns(String catalog, String schemaPattern,
             String tableNamePattern, String columnNamePattern) throws SQLException {
-        throw catalog("getPseudoColumns");
+        return emptyMetadata("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME",
+                "DATA_TYPE", "COLUMN_SIZE", "DECIMAL_DIGITS", "NUM_PREC_RADIX",
+                "COLUMN_USAGE", "REMARKS", "CHAR_OCTET_LENGTH", "IS_NULLABLE");
     }
 
     // -------------------------------------------------------------- Wrapper

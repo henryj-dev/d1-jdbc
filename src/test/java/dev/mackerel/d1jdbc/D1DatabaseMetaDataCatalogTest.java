@@ -520,6 +520,200 @@ class D1DatabaseMetaDataCatalogTest {
         }
     }
 
+    // ------------------------------- absent object kinds -> empty result sets
+
+    /** One DatabaseMetaData catalog call, for table-driven empty-shape checks. */
+    @FunctionalInterface
+    private interface MetadataCall {
+        ResultSet call(DatabaseMetaData md) throws SQLException;
+    }
+
+    private static void assertEmptyWithColumns(DatabaseMetaData md, MetadataCall call,
+            String... expected) throws SQLException {
+        ResultSet rs = call.call(md);
+        assertColumns(rs, expected);
+        assertFalse(rs.next(), "object kind does not exist in D1 -> zero rows");
+    }
+
+    @Test
+    void absentObjectKindsReturnEmptySpecShapedResultSetsWithoutQuerying()
+            throws SQLException {
+        MockTransport t = new MockTransport();
+        try (D1Connection c = new D1Connection(url(), t)) {
+            DatabaseMetaData md = c.getMetaData();
+
+            assertEmptyWithColumns(md, m -> m.getProcedures(null, null, null),
+                    "PROCEDURE_CAT", "PROCEDURE_SCHEM", "PROCEDURE_NAME",
+                    "UNDEF1", "UNDEF2", "UNDEF3", "REMARKS", "PROCEDURE_TYPE",
+                    "SPECIFIC_NAME");
+            assertEmptyWithColumns(md, m -> m.getProcedureColumns(null, null, null, null),
+                    "PROCEDURE_CAT", "PROCEDURE_SCHEM", "PROCEDURE_NAME", "COLUMN_NAME",
+                    "COLUMN_TYPE", "DATA_TYPE", "TYPE_NAME", "PRECISION", "LENGTH",
+                    "SCALE", "RADIX", "NULLABLE", "REMARKS", "COLUMN_DEF",
+                    "SQL_DATA_TYPE", "SQL_DATETIME_SUB", "CHAR_OCTET_LENGTH",
+                    "ORDINAL_POSITION", "IS_NULLABLE", "SPECIFIC_NAME");
+            assertEmptyWithColumns(md, m -> m.getFunctions(null, null, null),
+                    "FUNCTION_CAT", "FUNCTION_SCHEM", "FUNCTION_NAME", "REMARKS",
+                    "FUNCTION_TYPE", "SPECIFIC_NAME");
+            assertEmptyWithColumns(md, m -> m.getFunctionColumns(null, null, null, null),
+                    "FUNCTION_CAT", "FUNCTION_SCHEM", "FUNCTION_NAME", "COLUMN_NAME",
+                    "COLUMN_TYPE", "DATA_TYPE", "TYPE_NAME", "PRECISION", "LENGTH",
+                    "SCALE", "RADIX", "NULLABLE", "REMARKS", "CHAR_OCTET_LENGTH",
+                    "ORDINAL_POSITION", "IS_NULLABLE", "SPECIFIC_NAME");
+            assertEmptyWithColumns(md, m -> m.getUDTs(null, null, null, null),
+                    "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "CLASS_NAME", "DATA_TYPE",
+                    "REMARKS", "BASE_TYPE");
+            assertEmptyWithColumns(md, m -> m.getAttributes(null, null, null, null),
+                    "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "ATTR_NAME", "DATA_TYPE",
+                    "ATTR_TYPE_NAME", "ATTR_SIZE", "DECIMAL_DIGITS", "NUM_PREC_RADIX",
+                    "NULLABLE", "REMARKS", "ATTR_DEF", "SQL_DATA_TYPE",
+                    "SQL_DATETIME_SUB", "CHAR_OCTET_LENGTH", "ORDINAL_POSITION",
+                    "IS_NULLABLE", "SCOPE_CATALOG", "SCOPE_SCHEMA", "SCOPE_TABLE",
+                    "SOURCE_DATA_TYPE");
+            assertEmptyWithColumns(md, m -> m.getSuperTypes(null, null, null),
+                    "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME",
+                    "SUPERTYPE_CAT", "SUPERTYPE_SCHEM", "SUPERTYPE_NAME");
+            assertEmptyWithColumns(md, m -> m.getSuperTables(null, null, null),
+                    "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "SUPERTABLE_NAME");
+            assertEmptyWithColumns(md, m -> m.getTablePrivileges(null, null, null),
+                    "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME",
+                    "GRANTOR", "GRANTEE", "PRIVILEGE", "IS_GRANTABLE");
+            assertEmptyWithColumns(md, m -> m.getColumnPrivileges(null, null, "t", null),
+                    "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME",
+                    "GRANTOR", "GRANTEE", "PRIVILEGE", "IS_GRANTABLE");
+            assertEmptyWithColumns(md, m -> m.getVersionColumns(null, null, "t"),
+                    "SCOPE", "COLUMN_NAME", "DATA_TYPE", "TYPE_NAME", "COLUMN_SIZE",
+                    "BUFFER_LENGTH", "DECIMAL_DIGITS", "PSEUDO_COLUMN");
+            assertEmptyWithColumns(md,
+                    m -> m.getBestRowIdentifier(null, null, "t",
+                            DatabaseMetaData.bestRowSession, true),
+                    "SCOPE", "COLUMN_NAME", "DATA_TYPE", "TYPE_NAME", "COLUMN_SIZE",
+                    "BUFFER_LENGTH", "DECIMAL_DIGITS", "PSEUDO_COLUMN");
+            assertEmptyWithColumns(md, m -> m.getPseudoColumns(null, null, null, null),
+                    "TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME",
+                    "DATA_TYPE", "COLUMN_SIZE", "DECIMAL_DIGITS", "NUM_PREC_RADIX",
+                    "COLUMN_USAGE", "REMARKS", "CHAR_OCTET_LENGTH", "IS_NULLABLE");
+            assertEmptyWithColumns(md, m -> m.getClientInfoProperties(),
+                    "NAME", "MAX_LEN", "DEFAULT_VALUE", "DESCRIPTION");
+
+            assertTrue(t.queries.isEmpty(),
+                    "absent object kinds need no transport round-trip");
+        }
+    }
+
+    // -------------------------------------------------------- exported keys
+
+    private static final String[] FK_COLUMNS = {
+            "PKTABLE_CAT", "PKTABLE_SCHEM", "PKTABLE_NAME", "PKCOLUMN_NAME",
+            "FKTABLE_CAT", "FKTABLE_SCHEM", "FKTABLE_NAME", "FKCOLUMN_NAME",
+            "KEY_SEQ", "UPDATE_RULE", "DELETE_RULE", "FK_NAME", "PK_NAME",
+            "DEFERRABILITY"};
+
+    /** Canned {@code PRAGMA foreign_key_list} rows: id, seq, table, from, to, on_update, on_delete, match. */
+    private static D1QueryResult foreignKeyList(Object[]... rows) {
+        List<List<Object>> data = new ArrayList<>();
+        for (Object[] row : rows) {
+            data.add(Arrays.asList(row));
+        }
+        return result(
+                List.of("id", "seq", "table", "from", "to", "on_update", "on_delete", "match"),
+                data);
+    }
+
+    @Test
+    void getExportedKeysScansUserTablesAndReversesForeignKeys() throws SQLException {
+        MockTransport t = new MockTransport();
+        // userTableNames(null): sqlite_master name list (internals excluded).
+        t.enqueue(masterNames("_cf_KV", "orders", "payments", "users"));
+        // foreign_key_list("orders"): one FK to users, one to an unrelated table.
+        t.enqueue(foreignKeyList(
+                new Object[] {0L, 0L, "users", "user_id", "id",
+                        "NO ACTION", "CASCADE", "NONE"},
+                new Object[] {1L, 0L, "products", "product_id", "id",
+                        "NO ACTION", "NO ACTION", "NONE"}));
+        // foreign_key_list("payments"): composite FK to users.
+        t.enqueue(foreignKeyList(
+                new Object[] {0L, 0L, "users", "user_a", "a",
+                        "SET NULL", "RESTRICT", "NONE"},
+                new Object[] {0L, 1L, "users", "user_b", "b",
+                        "SET NULL", "RESTRICT", "NONE"}));
+        // foreign_key_list("users"): no FKs.
+        t.enqueue(foreignKeyList());
+        try (D1Connection c = new D1Connection(url(), t)) {
+            ResultSet rs = c.getMetaData().getExportedKeys(null, null, "users");
+            assertColumns(rs, FK_COLUMNS);
+
+            assertTrue(rs.next());
+            assertEquals("users", rs.getString("PKTABLE_NAME"));
+            assertEquals("id", rs.getString("PKCOLUMN_NAME"));
+            assertEquals("orders", rs.getString("FKTABLE_NAME"),
+                    "ordered by FKTABLE_NAME, then KEY_SEQ");
+            assertEquals("user_id", rs.getString("FKCOLUMN_NAME"));
+            assertEquals(1, rs.getShort("KEY_SEQ"));
+            assertEquals(DatabaseMetaData.importedKeyNoAction, rs.getInt("UPDATE_RULE"));
+            assertEquals(DatabaseMetaData.importedKeyCascade, rs.getInt("DELETE_RULE"));
+            assertEquals(DatabaseMetaData.importedKeyNotDeferrable,
+                    rs.getInt("DEFERRABILITY"));
+
+            assertTrue(rs.next());
+            assertEquals("payments", rs.getString("FKTABLE_NAME"));
+            assertEquals("user_a", rs.getString("FKCOLUMN_NAME"));
+            assertEquals("a", rs.getString("PKCOLUMN_NAME"));
+            assertEquals(1, rs.getShort("KEY_SEQ"));
+
+            assertTrue(rs.next());
+            assertEquals("payments", rs.getString("FKTABLE_NAME"));
+            assertEquals("user_b", rs.getString("FKCOLUMN_NAME"));
+            assertEquals(2, rs.getShort("KEY_SEQ"), "pragma seq 1 -> KEY_SEQ 2");
+
+            assertFalse(rs.next(), "the FK to 'products' is not exported by 'users'");
+
+            assertEquals(4, t.queries.size(),
+                    "one sqlite_master scan plus one pragma per user table");
+            assertEquals("PRAGMA foreign_key_list(\"orders\")", t.queries.get(1).sql());
+            assertEquals("PRAGMA foreign_key_list(\"payments\")", t.queries.get(2).sql());
+            assertEquals("PRAGMA foreign_key_list(\"users\")", t.queries.get(3).sql());
+        }
+    }
+
+    @Test
+    void getExportedKeysWithNullTableReturnsEmptyWithoutQuerying() throws SQLException {
+        MockTransport t = new MockTransport();
+        try (D1Connection c = new D1Connection(url(), t)) {
+            ResultSet rs = c.getMetaData().getExportedKeys(null, null, null);
+            assertColumns(rs, FK_COLUMNS);
+            assertFalse(rs.next());
+            assertTrue(t.queries.isEmpty(), "no transport round-trip for a null table");
+        }
+    }
+
+    @Test
+    void getCrossReferenceFiltersOneParentForeignPair() throws SQLException {
+        MockTransport t = new MockTransport();
+        t.enqueue(foreignKeyList(
+                new Object[] {0L, 0L, "users", "user_id", "id",
+                        "NO ACTION", "CASCADE", "NONE"},
+                new Object[] {1L, 0L, "products", "product_id", "id",
+                        "NO ACTION", "NO ACTION", "NONE"}));
+        try (D1Connection c = new D1Connection(url(), t)) {
+            ResultSet rs = c.getMetaData()
+                    .getCrossReference(null, null, "users", null, null, "orders");
+            assertColumns(rs, FK_COLUMNS);
+
+            assertTrue(rs.next());
+            assertEquals("users", rs.getString("PKTABLE_NAME"));
+            assertEquals("id", rs.getString("PKCOLUMN_NAME"));
+            assertEquals("orders", rs.getString("FKTABLE_NAME"));
+            assertEquals("user_id", rs.getString("FKCOLUMN_NAME"));
+            assertEquals(1, rs.getShort("KEY_SEQ"));
+
+            assertFalse(rs.next(), "the FK to 'products' does not match parent 'users'");
+            assertEquals(1, t.queries.size(),
+                    "cross-reference needs only the foreign table's pragma");
+            assertEquals("PRAGMA foreign_key_list(\"orders\")", t.queries.get(0).sql());
+        }
+    }
+
     @Test
     void getIndexInfoUniqueFlagFiltersNonUniqueIndexes() throws SQLException {
         MockTransport t = new MockTransport();
