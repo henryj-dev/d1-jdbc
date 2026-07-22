@@ -60,11 +60,22 @@ public final class Json {
     }
 
     private static final class Parser {
+        /** D1 shapes are ~4 levels deep; the cap only guards against a hostile or
+         * corrupt payload overflowing the stack via recursion. */
+        private static final int MAX_DEPTH = 128;
+
         final String s;
         int pos;
+        int depth;
 
         Parser(String s) {
             this.s = s;
+        }
+
+        private void enterDepth() {
+            if (++depth > MAX_DEPTH) {
+                throw new JsonException("JSON nesting exceeds " + MAX_DEPTH + " levels");
+            }
         }
 
         boolean atEnd() {
@@ -94,9 +105,19 @@ public final class Json {
             char c = peek();
             switch (c) {
                 case '{':
-                    return readObject();
+                    enterDepth();
+                    try {
+                        return readObject();
+                    } finally {
+                        depth--;
+                    }
                 case '[':
-                    return readArray();
+                    enterDepth();
+                    try {
+                        return readArray();
+                    } finally {
+                        depth--;
+                    }
                 case '"':
                     return readString();
                 case 't':
@@ -247,14 +268,21 @@ public final class Json {
                 }
             }
             String num = s.substring(start, pos);
-            if (fractional) {
-                return Double.parseDouble(num);
-            }
             try {
-                return Long.parseLong(num);
+                if (fractional) {
+                    return Double.parseDouble(num);
+                }
+                try {
+                    return Long.parseLong(num);
+                } catch (NumberFormatException e) {
+                    // Out of long range: fall back to double so parsing still succeeds.
+                    return Double.parseDouble(num);
+                }
             } catch (NumberFormatException e) {
-                // Out of long range: fall back to double so parsing still succeeds.
-                return Double.parseDouble(num);
+                // Malformed tokens the loose scanner accepted (lone '-', '1.2.3',
+                // '1e', '--') must surface as a JsonException, not leak a
+                // NumberFormatException across the parser boundary.
+                throw new JsonException("Malformed number '" + num + "' at index " + start);
             }
         }
 

@@ -46,6 +46,7 @@ public final class D1ResultSet implements ResultSet {
     private int cursor = -1; // before first
     private boolean wasNull = false;
     private boolean closed = false;
+    private int fetchSizeHint = 0; // advisory only; no streaming cursor (DESIGN 4-3)
 
     D1ResultSet(D1Statement statement, D1QueryResult result) {
         this.statement = statement;
@@ -569,12 +570,15 @@ public final class D1ResultSet implements ResultSet {
     public void setFetchSize(int rows) throws SQLException {
         checkOpen();
         // No streaming cursor; fetch size is advisory (DESIGN 4-3).
+        this.fetchSizeHint = rows;
     }
 
     @Override
     public int getFetchSize() throws SQLException {
         checkOpen();
-        return rows.size();
+        // Return the advisory hint (consistent with D1Statement.getFetchSize()),
+        // not the materialized row count.
+        return fetchSizeHint;
     }
 
     @Override

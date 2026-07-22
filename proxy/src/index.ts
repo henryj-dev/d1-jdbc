@@ -96,10 +96,29 @@ function checkAuth(req: Request, env: Env): Response | null {
   }
   const header = req.headers.get("authorization") ?? "";
   const expected = `Bearer ${env.PROXY_SECRET}`;
-  if (header !== expected) {
+  if (!timingSafeEqualStr(header, expected)) {
     return new Response("unauthorized", { status: 401 });
   }
   return null;
+}
+
+/**
+ * Constant-time string comparison via the Workers runtime's
+ * crypto.subtle.timingSafeEqual (a Cloudflare extension). Length inequality
+ * short-circuits — observable, but harmless for a high-entropy secret.
+ */
+function timingSafeEqualStr(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a);
+  const bb = enc.encode(b);
+  if (ab.byteLength !== bb.byteLength) {
+    return false;
+  }
+  return (
+    crypto.subtle as SubtleCrypto & {
+      timingSafeEqual(x: ArrayBufferView, y: ArrayBufferView): boolean;
+    }
+  ).timingSafeEqual(ab, bb);
 }
 
 /**

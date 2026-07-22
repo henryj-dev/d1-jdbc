@@ -180,4 +180,24 @@ class JsonTest {
     void invalidUnicodeEscapeThrowsJsonException() {
         assertThrows(Json.JsonException.class, () -> Json.parse("\"\\uZZZZ\""));
     }
+
+    @Test
+    void malformedNumbersThrowJsonExceptionNotNumberFormat() {
+        for (String bad : new String[] {"-", "1.2.3", "1e", "1e+", "--1", "[1, -]"}) {
+            RuntimeException ex =
+                    assertThrows(Json.JsonException.class, () -> Json.parse(bad),
+                            "input: " + bad);
+            assertFalse(ex instanceof NumberFormatException,
+                    "must not leak a raw NumberFormatException for: " + bad);
+        }
+    }
+
+    @Test
+    void excessiveNestingThrowsJsonExceptionInsteadOfStackOverflow() {
+        String deep = "[".repeat(200) + "]".repeat(200);
+        assertThrows(Json.JsonException.class, () -> Json.parse(deep));
+        // 100 levels is comfortably within the cap and must still parse.
+        String ok = "[".repeat(100) + "]".repeat(100);
+        Json.parse(ok);
+    }
 }
