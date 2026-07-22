@@ -258,10 +258,14 @@ export default {
 
 ### 구현에 반영할 정정 (문서와 모순된 기존 가정)
 
-- [ ] **wire 헤더 개명**: `x-cf-d1-session-commit-token`(내부 workerd 명) → 공개 문서 헤더 **`x-d1-bookmark`**(요청·응답). 코드 `BOOKMARK_HEADER` 상수 변경.
-- [ ] **세션을 B 전용으로**: §2 능력표에서 REST의 세션 지원 제거. `RestTransport.capabilities().supportsSessions=false`.
+- [x] **wire 헤더 개명**: `x-cf-d1-session-commit-token`(내부 workerd 명) → 공개 문서 헤더 **`x-d1-bookmark`**(요청·응답). 코드 `BOOKMARK_HEADER` 상수 변경 완료.
+- [x] **세션을 B 전용으로**: `RestTransport.capabilities().supportsSessions=false` 반영 완료.
 - [x] **`supportsAtomicBatch`(REST) = true**: `{batch:[…]}` 폼 구현 완료(실측 확정 §9-2).
-- [ ] **`meta` 필드 최신화**: `served_by` → `served_by_colo`/`served_by_primary`/`served_by_region`, `timings.sql_duration_ms`, `changed_db` 반영 (§4-4, `D1Meta`).
+- [x] **`meta` 필드 최신화**: `served_by_colo`/`_primary`/`_region` + `timings.sql_duration_ms` 반영 완료. 레거시 `served_by`는 fallback으로 수용(실 프로덕션이 병행 송신함을 실측 확인).
+- [x] **크기 상한 강제 (Phase 2)**: `D1Limits` + setter/실행/버퍼/배치 가드, `executeBatch` 1,000문장 청크 분할, `commit()` 원자성 보호(초과 시 거부), `DatabaseMetaData` 수치 공표. (2026-07)
+
+> 위 정정은 전부 구현·커밋되었고, 라이브 e2e(REST·Proxy 두 전송로, 실 D1)로 검증됨 — 103/103 테스트 통과.
+> **프록시 런타임 발견(§9-2 추가)**: 세션 경로에서 `raw({columns:true})`의 columns 옵션이 무시됨(헤더 미반환) → 프록시 Worker는 `.all()` 기반으로 동작. 중복 동명 컬럼 축약은 문서화된 한계(REST `/raw`는 완전 충실).
 
 ---
 
