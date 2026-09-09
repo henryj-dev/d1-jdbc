@@ -30,8 +30,8 @@ publishing {
                 url = "https://github.com/mack-erel/d1-jdbc"
                 licenses {
                     license {
-                        name = "MIT License"
-                        url = "https://opensource.org/licenses/MIT"
+                        name = "The Apache License, Version 2.0"
+                        url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
                     }
                 }
                 developers {

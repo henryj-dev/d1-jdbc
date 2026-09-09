@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mack-erel/d1-jdbc/actions/workflows/ci.yml/badge.svg)](https://github.com/mack-erel/d1-jdbc/actions/workflows/ci.yml)
 [![JitPack](https://jitpack.io/v/mack-erel/d1-jdbc.svg)](https://jitpack.io/#mack-erel/d1-jdbc)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 A JDBC driver for [Cloudflare D1](https://developers.cloudflare.com/d1/) (edge SQLite).
 **Zero runtime dependencies** — only the JDK (`java.net.http` + a built-in JSON codec).
@@ -141,4 +141,4 @@ interactive transactions (a D1 platform constraint, not a driver gap).
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)

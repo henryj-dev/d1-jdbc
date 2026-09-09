@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mack-erel/d1-jdbc/actions/workflows/ci.yml/badge.svg)](https://github.com/mack-erel/d1-jdbc/actions/workflows/ci.yml)
 [![JitPack](https://jitpack.io/v/mack-erel/d1-jdbc.svg)](https://jitpack.io/#mack-erel/d1-jdbc)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 [Cloudflare D1](https://developers.cloudflare.com/d1/)(엣지 SQLite)을 표준 JDBC로 접근하는 드라이버.
 **런타임 의존성 0** — JDK만 사용한다 (`java.net.http` + 내장 JSON 코덱).
@@ -124,4 +124,4 @@ D1에는 **인터랙티브 트랜잭션이 없다** (HTTP 요청마다 auto-comm
 
 ## 라이선스
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
